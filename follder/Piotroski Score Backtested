@@ -1,0 +1,3906 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "id": "906b53fe",
+   "metadata": {},
+   "source": [
+    "# Code to get the Piotroski Score"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 39,
+   "id": "b9e4756c",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Loading library list...\n",
+      "Done\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Loading requisite libraries and establishing connection with wrds\n",
+    "# https://wrds-www.wharton.upenn.edu\n",
+    "import pandas as pd\n",
+    "import pandas_datareader as pdr\n",
+    "import numpy as np\n",
+    "import datetime\n",
+    "import matplotlib.pyplot as plt\n",
+    "import wrds\n",
+    "import plotly.express as px\n",
+    "\n",
+    "# wrds username is private, if you do not have a wrds key, the datasets have been uploaded in the github repository for usage\n",
+    "db = wrds.Connection(wrds_username=\"rajee006\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 40,
+   "id": "5e2327c4",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# SQL query to grab 2020 financials on net income, revenue, and employees\n",
+    "df = db.raw_sql(\n",
+    "    \"\"\"\n",
+    "select gvkey,tic,fyear,datadate,conm,revt,ni,emp,prcc_f, ceq,\n",
+    "oancf,at,dltt,act,lct,csho,cogs\n",
+    "from compa.funda where datadate between '01/01/2003' and '12/31/2021'\n",
+    "and datafmt in ('STD') and consol in ('C') and popsrc in ('D') and indfmt in \n",
+    "('INDL') and curcd in ('USD')\n",
+    "\"\"\"\n",
+    ")\n",
+    "\n",
+    "# Column Explanations\n",
+    "# gvkey - Global Company Key\n",
+    "# tic - Ticker\n",
+    "#fyear - Fiscal Year\n",
+    "#datadate - Date\n",
+    "#conm - Company Name\n",
+    "#revt - Total Revenue\n",
+    "#ni - Nett Income\n",
+    "# emp - Number of Employees\n",
+    "#prcc_f - Price Close Annual Fiscal\n",
+    "#ceq - Common / Ordinary Equity\n",
+    "#oancf - Operating activities nett cash flow\n",
+    "#at - Assets Total\n",
+    "#dltt - Long Term Total Debt\n",
+    "#act - Current Asses total\n",
+    "#lct - Current Liabilities total\n",
+    "#csho - Common Shares Outstanding\n",
+    "#cogs - Cost of Goods Sold"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 41,
+   "id": "87f6c243",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# The data has also been uploaded as csv file in the github location\n",
+    "#df.to_csv('annual_statements.csv')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 42,
+   "id": "efb09a70",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Generate variables\n",
+    "df[\"mcap\"] = df[\"prcc_f\"] * df[\"csho\"]\n",
+    "df[\"btm\"] = df[\"ceq\"] / df[\"mcap\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "id": "f0907c98",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Profitability Criteria\n",
+    "\n",
+    "# Net income\n",
+    "df[\"f1\"] = (df[\"ni\"] > 0).astype(int)\n",
+    "\n",
+    "# Operating cash flows\n",
+    "df[\"f2\"] = (df[\"oancf\"] > 0).astype(int)\n",
+    "\n",
+    "# ROA\n",
+    "df.sort_values(by=[\"gvkey\", \"datadate\"], ascending=True, inplace=True)\n",
+    "df[\"roa\"] = df[\"ni\"] / df[\"at\"]\n",
+    "df[\"lag_roa\"] = df.groupby([\"gvkey\"])[\"roa\"].shift(1)\n",
+    "df[\"f3\"] = (df[\"roa\"] > df[\"lag_roa\"]).astype(int)\n",
+    "\n",
+    "# Quality of earnings\n",
+    "df[\"f4\"] = (df[\"oancf\"] > df[\"ni\"]).astype(int)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 44,
+   "id": "3fc03574",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Leverage, Liquidity, and Source of Funds Criteria \n",
+    "\n",
+    "# Long term debt vs assets\n",
+    "df[\"ltd\"] = df[\"dltt\"] / df[\"at\"]\n",
+    "df[\"lag_ltd\"] = df.groupby([\"gvkey\"])[\"dltt\"].shift(1)\n",
+    "df[\"f5\"] = (df[\"ltd\"] > df[\"lag_ltd\"]).astype(int)\n",
+    "# Current ratio\n",
+    "df[\"cr\"] = df[\"act\"] / df[\"lct\"]\n",
+    "df[\"lag_cr\"] = df.groupby([\"gvkey\"])[\"cr\"].shift(1)\n",
+    "df[\"f6\"] = (df[\"cr\"] > df[\"lag_cr\"]).astype(int)\n",
+    "# Shares outstanding\n",
+    "df[\"lag_csho\"] = df.groupby([\"gvkey\"])[\"csho\"].shift(1)\n",
+    "df[\"f7\"] = (df[\"csho\"] <= df[\"lag_csho\"]).astype(int)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "id": "95e5e40d",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Operating Efficiency Criteria \n",
+    "\n",
+    "# Gross margin\n",
+    "df[\"gm\"] = (df[\"revt\"] - df[\"cogs\"]) / df[\"revt\"]\n",
+    "df[\"lag_gm\"] = df.groupby([\"gvkey\"])[\"gm\"].shift(1)\n",
+    "df[\"f8\"] = (df[\"gm\"] > df[\"lag_gm\"]).astype(int)\n",
+    "# Asset Turnover\n",
+    "df[\"asset_turnover\"] = df[\"revt\"] / df[\"at\"]\n",
+    "df[\"lag_asset_turnover\"] = df.groupby([\"gvkey\"])[\"asset_turnover\"].shift(1)\n",
+    "df[\"f9\"] = (df[\"asset_turnover\"] > df[\"lag_asset_turnover\"]).astype(int)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 46,
+   "id": "f2d9165d",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>gvkey</th>\n",
+       "      <th>tic</th>\n",
+       "      <th>fyear</th>\n",
+       "      <th>datadate</th>\n",
+       "      <th>conm</th>\n",
+       "      <th>revt</th>\n",
+       "      <th>ni</th>\n",
+       "      <th>emp</th>\n",
+       "      <th>prcc_f</th>\n",
+       "      <th>ceq</th>\n",
+       "      <th>...</th>\n",
+       "      <th>lag_cr</th>\n",
+       "      <th>f6</th>\n",
+       "      <th>lag_csho</th>\n",
+       "      <th>f7</th>\n",
+       "      <th>gm</th>\n",
+       "      <th>lag_gm</th>\n",
+       "      <th>f8</th>\n",
+       "      <th>asset_turnover</th>\n",
+       "      <th>lag_asset_turnover</th>\n",
+       "      <th>f9</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>1569</th>\n",
+       "      <td>001690</td>\n",
+       "      <td>AAPL</td>\n",
+       "      <td>2003.0</td>\n",
+       "      <td>2003-09-30</td>\n",
+       "      <td>APPLE INC</td>\n",
+       "      <td>6207.0</td>\n",
+       "      <td>69.0</td>\n",
+       "      <td>13.566</td>\n",
+       "      <td>20.72</td>\n",
+       "      <td>4223.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>0</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0.293185</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0.910785</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>0</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1570</th>\n",
+       "      <td>001690</td>\n",
+       "      <td>AAPL</td>\n",
+       "      <td>2004.0</td>\n",
+       "      <td>2004-09-30</td>\n",
+       "      <td>APPLE INC</td>\n",
+       "      <td>8279.0</td>\n",
+       "      <td>276.0</td>\n",
+       "      <td>13.426</td>\n",
+       "      <td>38.75</td>\n",
+       "      <td>5076.0</td>\n",
+       "      <td>...</td>\n",
+       "      <td>2.497667</td>\n",
+       "      <td>1</td>\n",
+       "      <td>366.727</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0.290917</td>\n",
+       "      <td>0.293185</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1.028447</td>\n",
+       "      <td>0.910785</td>\n",
+       "      <td>1</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "<p>2 rows × 39 columns</p>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "       gvkey   tic   fyear    datadate       conm    revt     ni     emp  \\\n",
+       "1569  001690  AAPL  2003.0  2003-09-30  APPLE INC  6207.0   69.0  13.566   \n",
+       "1570  001690  AAPL  2004.0  2004-09-30  APPLE INC  8279.0  276.0  13.426   \n",
+       "\n",
+       "      prcc_f     ceq  ...    lag_cr  f6  lag_csho  f7        gm    lag_gm  f8  \\\n",
+       "1569   20.72  4223.0  ...       NaN   0       NaN   0  0.293185       NaN   0   \n",
+       "1570   38.75  5076.0  ...  2.497667   1   366.727   0  0.290917  0.293185   0   \n",
+       "\n",
+       "      asset_turnover  lag_asset_turnover  f9  \n",
+       "1569        0.910785                 NaN   0  \n",
+       "1570        1.028447            0.910785   1  \n",
+       "\n",
+       "[2 rows x 39 columns]"
+      ]
+     },
+     "execution_count": 46,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# QC Step\n",
+    "# Checking presence of specific stocks as a QC\n",
+    "df[df['tic']=='AAPL'].head(2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 47,
+   "id": "e5ec897a",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "Index(['gvkey', 'tic', 'fyear', 'datadate', 'conm', 'revt', 'ni', 'emp',\n",
+       "       'prcc_f', 'ceq', 'oancf', 'at', 'dltt', 'act', 'lct', 'csho', 'cogs',\n",
+       "       'mcap', 'btm', 'f1', 'f2', 'roa', 'lag_roa', 'f3', 'f4', 'ltd',\n",
+       "       'lag_ltd', 'f5', 'cr', 'lag_cr', 'f6', 'lag_csho', 'f7', 'gm', 'lag_gm',\n",
+       "       'f8', 'asset_turnover', 'lag_asset_turnover', 'f9'],\n",
+       "      dtype='object')"
+      ]
+     },
+     "execution_count": 47,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# QC Step\n",
+    "# Checking if all scores are in\n",
+    "df.columns"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 48,
+   "id": "0646da57",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Assigning the piotroski score based on all characteristics\n",
+    "df[\"fscore\"] = df[\"f1\"] + df[\"f2\"] + df[\"f3\"] + df[\"f4\"] + df[\"f5\"] + df[\"f6\"] + df[\"f7\"] + df[\"f8\"] + df[\"f9\"]"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 49,
+   "id": "77fd7b8a",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Sample select out observations with missing input variables which will delete observations that are erroneously coded as zero\n",
+    "df = df.dropna(\n",
+    "    subset=[\n",
+    "        \"ni\",\n",
+    "        \"revt\",\n",
+    "        \"ceq\",\n",
+    "        \"prcc_f\",\n",
+    "        \"csho\",\n",
+    "        \"oancf\",\n",
+    "        \"dltt\",\n",
+    "        \"at\",\n",
+    "        \"act\",\n",
+    "        \"lct\",\n",
+    "        \"cogs\",\n",
+    "        \"lag_gm\",\n",
+    "        \"gm\",\n",
+    "        \"lag_csho\",\n",
+    "        \"lag_asset_turnover\",\n",
+    "        \"asset_turnover\",\n",
+    "        \"ltd\",\n",
+    "        \"lag_roa\",\n",
+    "    ]\n",
+    ")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 50,
+   "id": "b4b2b048",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "gvkey                 False\n",
+       "tic                   False\n",
+       "fyear                 False\n",
+       "datadate              False\n",
+       "conm                  False\n",
+       "revt                  False\n",
+       "ni                    False\n",
+       "emp                    True\n",
+       "prcc_f                False\n",
+       "ceq                   False\n",
+       "oancf                 False\n",
+       "at                    False\n",
+       "dltt                  False\n",
+       "act                   False\n",
+       "lct                   False\n",
+       "csho                  False\n",
+       "cogs                  False\n",
+       "mcap                  False\n",
+       "btm                   False\n",
+       "f1                    False\n",
+       "f2                    False\n",
+       "roa                   False\n",
+       "lag_roa               False\n",
+       "f3                    False\n",
+       "f4                    False\n",
+       "ltd                   False\n",
+       "lag_ltd                True\n",
+       "f5                    False\n",
+       "cr                    False\n",
+       "lag_cr                 True\n",
+       "f6                    False\n",
+       "lag_csho              False\n",
+       "f7                    False\n",
+       "gm                    False\n",
+       "lag_gm                False\n",
+       "f8                    False\n",
+       "asset_turnover        False\n",
+       "lag_asset_turnover    False\n",
+       "f9                    False\n",
+       "fscore                False\n",
+       "dtype: bool"
+      ]
+     },
+     "execution_count": 50,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Check missing values in any columns?\n",
+    "\n",
+    "# Ensuring that all the rows have all the scores required for the piotroski score\n",
+    "df.isnull().any()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 51,
+   "id": "efa34800",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/plain": [
+       "<AxesSubplot:>"
+      ]
+     },
+     "execution_count": 51,
+     "metadata": {},
+     "output_type": "execute_result"
+    },
+    {
+     "data": {
+      "image/png": "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\n",
+      "text/plain": [
+       "<Figure size 432x288 with 1 Axes>"
+      ]
+     },
+     "metadata": {
+      "needs_background": "light"
+     },
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "# Histogram of F-Score\n",
+    "\n",
+    "# Checking the histogram to check if it is a normal distribution which is expected\n",
+    "df[\"fscore\"].hist(bins=10)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 52,
+   "id": "33f28f06",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>fyear</th>\n",
+       "      <th>tic</th>\n",
+       "      <th>conm</th>\n",
+       "      <th>f1</th>\n",
+       "      <th>f2</th>\n",
+       "      <th>f3</th>\n",
+       "      <th>f4</th>\n",
+       "      <th>f5</th>\n",
+       "      <th>f6</th>\n",
+       "      <th>f7</th>\n",
+       "      <th>f8</th>\n",
+       "      <th>f9</th>\n",
+       "      <th>btm</th>\n",
+       "      <th>mcap</th>\n",
+       "      <th>fscore</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2003.0</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0.976617</td>\n",
+       "      <td>308.90710</td>\n",
+       "      <td>7</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>2004.0</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0.602174</td>\n",
+       "      <td>522.67944</td>\n",
+       "      <td>6</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>2005.0</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>1</td>\n",
+       "      <td>0</td>\n",
+       "      <td>0.478930</td>\n",
+       "      <td>882.62832</td>\n",
+       "      <td>4</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "    fyear  tic      conm  f1  f2  f3  f4  f5  f6  f7  f8  f9       btm  \\\n",
+       "1  2003.0  AIR  AAR CORP   1   1   1   1   0   1   0   1   1  0.976617   \n",
+       "2  2004.0  AIR  AAR CORP   1   1   1   1   0   0   0   1   1  0.602174   \n",
+       "3  2005.0  AIR  AAR CORP   1   0   1   0   0   1   0   1   0  0.478930   \n",
+       "\n",
+       "        mcap  fscore  \n",
+       "1  308.90710       7  \n",
+       "2  522.67944       6  \n",
+       "3  882.62832       4  "
+      ]
+     },
+     "execution_count": 52,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "final_scores = df[[\"fyear\", \"tic\",\"conm\",\"f1\",\"f2\",\"f3\",\"f4\",\"f5\",\"f6\",\"f7\",\"f8\",\"f9\",\"btm\",'mcap',\"fscore\"]]\n",
+    "final_scores.head(3)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "770cf248",
+   "metadata": {},
+   "source": [
+    "## Creating a function to get the F-Scores of all stocks for a given year"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 53,
+   "id": "a6d66505",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>fyear</th>\n",
+       "      <th>ticker</th>\n",
+       "      <th>Piotroski_F_Score</th>\n",
+       "      <th>btm</th>\n",
+       "      <th>mcap</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>8</th>\n",
+       "      <td>2010.0</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>5</td>\n",
+       "      <td>0.796179</td>\n",
+       "      <td>1049.82059</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>26</th>\n",
+       "      <td>2010.0</td>\n",
+       "      <td>ADCT.1</td>\n",
+       "      <td>7</td>\n",
+       "      <td>0.348836</td>\n",
+       "      <td>1231.52400</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>47</th>\n",
+       "      <td>2010.0</td>\n",
+       "      <td>AAL</td>\n",
+       "      <td>5</td>\n",
+       "      <td>-1.518724</td>\n",
+       "      <td>2597.57550</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>69</th>\n",
+       "      <td>2010.0</td>\n",
+       "      <td>CECE</td>\n",
+       "      <td>7</td>\n",
+       "      <td>0.412157</td>\n",
+       "      <td>85.34124</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>110</th>\n",
+       "      <td>2010.0</td>\n",
+       "      <td>AVX</td>\n",
+       "      <td>5</td>\n",
+       "      <td>0.803927</td>\n",
+       "      <td>2536.81722</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "      fyear  ticker  Piotroski_F_Score       btm        mcap\n",
+       "8    2010.0     AIR                  5  0.796179  1049.82059\n",
+       "26   2010.0  ADCT.1                  7  0.348836  1231.52400\n",
+       "47   2010.0     AAL                  5 -1.518724  2597.57550\n",
+       "69   2010.0    CECE                  7  0.412157    85.34124\n",
+       "110  2010.0     AVX                  5  0.803927  2536.81722"
+      ]
+     },
+     "execution_count": 53,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "def get_piotroski_score(year):\n",
+    "    Piotroski_op = final_scores[(final_scores['fyear']==year)]\n",
+    "    Piotroski_op = Piotroski_op[['fyear','tic','fscore','btm','mcap']]\n",
+    "    Piotroski_op = Piotroski_op.rename(columns = {'tic':'ticker', 'fscore':'Piotroski_F_Score'})\n",
+    "    return (Piotroski_op)\n",
+    "get_piotroski_score(2010).head(5)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "88fd6ac3",
+   "metadata": {},
+   "source": [
+    "## Extracting daily Stock Prices from wrds"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 54,
+   "id": "d423b034",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Date</th>\n",
+       "      <th>Name</th>\n",
+       "      <th>Company_Name</th>\n",
+       "      <th>Close</th>\n",
+       "      <th>High</th>\n",
+       "      <th>Low</th>\n",
+       "      <th>Open</th>\n",
+       "      <th>Average_Price</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>2021-12-30</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>38.55</td>\n",
+       "      <td>39.46</td>\n",
+       "      <td>38.45</td>\n",
+       "      <td>39.160</td>\n",
+       "      <td>38.955</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2021-12-30</td>\n",
+       "      <td>AAL</td>\n",
+       "      <td>AMERICAN AIRLINES GROUP INC</td>\n",
+       "      <td>18.07</td>\n",
+       "      <td>18.38</td>\n",
+       "      <td>17.96</td>\n",
+       "      <td>17.975</td>\n",
+       "      <td>18.170</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>2021-12-30</td>\n",
+       "      <td>CECE</td>\n",
+       "      <td>CECO ENVIRONMENTAL CORP</td>\n",
+       "      <td>6.23</td>\n",
+       "      <td>6.32</td>\n",
+       "      <td>6.15</td>\n",
+       "      <td>6.150</td>\n",
+       "      <td>6.235</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        Date  Name                 Company_Name  Close   High    Low    Open  \\\n",
+       "0 2021-12-30   AIR                     AAR CORP  38.55  39.46  38.45  39.160   \n",
+       "1 2021-12-30   AAL  AMERICAN AIRLINES GROUP INC  18.07  18.38  17.96  17.975   \n",
+       "2 2021-12-30  CECE      CECO ENVIRONMENTAL CORP   6.23   6.32   6.15   6.150   \n",
+       "\n",
+       "   Average_Price  \n",
+       "0         38.955  \n",
+       "1         18.170  \n",
+       "2          6.235  "
+      ]
+     },
+     "execution_count": 54,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Code to get the stock Prices live from wrds data, but the data has been extracted from a csv file downloaded from the\n",
+    "# website\n",
+    "\n",
+    "stock_final = db.raw_sql(\n",
+    "    \"\"\"\n",
+    "select datadate,tic,conm,prccd,prchd,prcld,prcod\n",
+    "from comp.secd where datadate between '12/30/2021' and '12/31/2021'\n",
+    "\"\"\"\n",
+    ")\n",
+    "\n",
+    "stock_final = stock_final.rename(columns = {'datadate':'Date', 'tic':'Name','conm':'Company_Name','prccd':'Close','prchd':'High','prcld':'Low',\\\n",
+    "                         'prcod':'Open'})\n",
+    "stock_final['Average_Price'] = (stock_final['High'] + stock_final['Low'])/2\n",
+    "stock_final.Date = pd.to_datetime(stock_final.Date)\n",
+    "stock_final.head(3)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 55,
+   "id": "23a09784",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "D:\\Anaconda\\lib\\site-packages\\IPython\\core\\interactiveshell.py:3357: DtypeWarning:\n",
+      "\n",
+      "Columns (1) have mixed types.Specify dtype option on import or set low_memory=False.\n",
+      "\n"
+     ]
+    },
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>gvkey</th>\n",
+       "      <th>iid</th>\n",
+       "      <th>datadate</th>\n",
+       "      <th>tic</th>\n",
+       "      <th>conm</th>\n",
+       "      <th>prccd</th>\n",
+       "      <th>prchd</th>\n",
+       "      <th>prcld</th>\n",
+       "      <th>prcod</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>1004</td>\n",
+       "      <td>1</td>\n",
+       "      <td>2004-01-02</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>15.30</td>\n",
+       "      <td>15.55</td>\n",
+       "      <td>15.00</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>1004</td>\n",
+       "      <td>1</td>\n",
+       "      <td>2004-01-05</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>16.16</td>\n",
+       "      <td>16.41</td>\n",
+       "      <td>16.05</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>1004</td>\n",
+       "      <td>1</td>\n",
+       "      <td>2004-01-06</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>16.18</td>\n",
+       "      <td>16.62</td>\n",
+       "      <td>16.16</td>\n",
+       "      <td>NaN</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   gvkey iid   datadate  tic      conm  prccd  prchd  prcld  prcod\n",
+       "0   1004   1 2004-01-02  AIR  AAR CORP  15.30  15.55  15.00    NaN\n",
+       "1   1004   1 2004-01-05  AIR  AAR CORP  16.16  16.41  16.05    NaN\n",
+       "2   1004   1 2004-01-06  AIR  AAR CORP  16.18  16.62  16.16    NaN"
+      ]
+     },
+     "execution_count": 55,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "stock_final = pd.read_table(\"Stock_Prices_wrds.txt\", delimiter=\"\\t\")\n",
+    "stock_final['datadate'] = pd.to_datetime(stock_final['datadate'], format='%Y%m%d')\n",
+    "stock_final.head(3)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 56,
+   "id": "5411de52",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Date</th>\n",
+       "      <th>Name</th>\n",
+       "      <th>Company_Name</th>\n",
+       "      <th>Close</th>\n",
+       "      <th>High</th>\n",
+       "      <th>Low</th>\n",
+       "      <th>Open</th>\n",
+       "      <th>Average_Price</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>2004-01-02</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>15.30</td>\n",
+       "      <td>15.55</td>\n",
+       "      <td>15.00</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>15.275</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2004-01-05</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>16.16</td>\n",
+       "      <td>16.41</td>\n",
+       "      <td>16.05</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>16.230</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>2004-01-06</td>\n",
+       "      <td>AIR</td>\n",
+       "      <td>AAR CORP</td>\n",
+       "      <td>16.18</td>\n",
+       "      <td>16.62</td>\n",
+       "      <td>16.16</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>16.390</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        Date Name Company_Name  Close   High    Low  Open  Average_Price\n",
+       "0 2004-01-02  AIR     AAR CORP  15.30  15.55  15.00   NaN         15.275\n",
+       "1 2004-01-05  AIR     AAR CORP  16.16  16.41  16.05   NaN         16.230\n",
+       "2 2004-01-06  AIR     AAR CORP  16.18  16.62  16.16   NaN         16.390"
+      ]
+     },
+     "execution_count": 56,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "stock_final = stock_final.rename(columns = {'datadate':'Date', 'tic':'Name','conm':'Company_Name','prccd':'Close','prchd':'High','prcld':'Low',\\\n",
+    "                         'prcod':'Open'})\n",
+    "stock_final['Average_Price'] = (stock_final['High'] + stock_final['Low'])/2\n",
+    "stock_final.Date = pd.to_datetime(stock_final.Date)\n",
+    "stock_final = stock_final.drop(columns=['gvkey', 'iid'])\n",
+    "stock_final.head(3)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "3fa5d003",
+   "metadata": {},
+   "source": [
+    "### Creating functions to calculate entry and exit for Piotroski Score"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 57,
+   "id": "a12313b9",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def get_stock_prices (ticker, date):\n",
+    "    stock_price = stock_final[stock_final['Name'].isin(ticker)]\n",
+    "    stock_price = stock_price[stock_price['Date']==date]\n",
+    "    stock_price = stock_price[['Name','Date','Average_Price']]\n",
+    "    return stock_price"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 58,
+   "id": "a5b3ae1c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Writing a function to check if the market was actually open that day. Data may not be present for dates exactly after 1 year\n",
+    "# Hence, hedging by postponing it by a week\n",
+    "def presence_of_date (year,month,day):\n",
+    "    \n",
+    "    if (pd.Timestamp(year,month,day) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day)\n",
+    "    elif (pd.Timestamp(year,month,day + 1) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 1)\n",
+    "    elif (pd.Timestamp(year,month,day + 2) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 2)\n",
+    "    elif (pd.Timestamp(year,month,day + 3) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 3)\n",
+    "    elif (pd.Timestamp(year,month,day + 4) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 4)\n",
+    "    elif (pd.Timestamp(year,month,day + 5) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 5)\n",
+    "    elif (pd.Timestamp(year,month,day + 6) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 6)\n",
+    "    elif (pd.Timestamp(year,month,day + 7) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 7 )\n",
+    "    elif (pd.Timestamp(year,month,day + 8) in stock_final.Date.drop_duplicates().values):\n",
+    "        return datetime.datetime(year,month,day + 8 )"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "554810e8",
+   "metadata": {},
+   "source": [
+    "# Backtesting by Implementing the Piotroski Algorithm from 2005 - 2020"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 59,
+   "id": "85683172",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Function to calculate the return of investment of the piotroski score by just buying stocks\n",
+    "def piotroski_return (total_investment,number_of_stocks,entry_date, number_of_years, Piotroski_score_limit, btm_percentile,mcap_min):\n",
+    "    overall_revenue = 0\n",
+    "    annual_revenue = list()\n",
+    "    years_of_sale = list()\n",
+    "    revenue_percentage = pd.DataFrame()\n",
+    "\n",
+    "    for year_num in range(0,number_of_years):\n",
+    "        amount_per_stock = total_investment / number_of_stocks\n",
+    "        Piotroski_op = get_piotroski_score(entry_date.year + year_num - 1)\n",
+    "        Piotroski_op = Piotroski_op.sort_values(by=['Piotroski_F_Score','mcap','btm'], ascending = False)\n",
+    "\n",
+    "        #---------------------------- Buying the Stock------------------------------------------\n",
+    "\n",
+    "        # Checking if the given entry date is present, else take the next open date\n",
+    "        New_date = presence_of_date(entry_date.year + year_num,entry_date.month,entry_date.day)\n",
+    "\n",
+    "\n",
+    "        # Getting Buying statistics of a stock in a given year\n",
+    "        stock_price = get_stock_prices (Piotroski_op.ticker.unique().tolist(),datetime.datetime(New_date.year,New_date.month,New_date.day))\n",
+    "\n",
+    "        stock_price['Qty_Bought'] = (amount_per_stock /stock_price['Average_Price']).apply(np.floor)\n",
+    "        stock_price['Invested'] = stock_price['Qty_Bought'] * stock_price['Average_Price']\n",
+    "        stock_price = stock_price[stock_price['Qty_Bought']!= 0]\n",
+    "        stock_price = pd.merge(stock_price, Piotroski_op, how='left', left_on='Name', right_on='ticker')\n",
+    "\n",
+    "        # Piotroski Score and BTM to be adjusted according to user risk taking\n",
+    "        stock_price = stock_price[(stock_price['Piotroski_F_Score'] >= Piotroski_score_limit) & (stock_price['btm'] >= stock_price['btm'].quantile(btm_percentile))  & (stock_price['mcap'] >= mcap_min)]\n",
+    "\n",
+    "        stock_price = stock_price.sort_values(by=['Piotroski_F_Score','btm'], ascending = False)\n",
+    "        stock_price = stock_price[:number_of_stocks]\n",
+    "        stock_price = stock_price[['Name','Qty_Bought','Invested','Piotroski_F_Score','btm','mcap']]\n",
+    "\n",
+    "\n",
+    "        #---------------------------- Selling the Stock after 1 year------------------------------------------\n",
+    "\n",
+    "\n",
+    "        # Checking if the given entry date is present, else take the next open date\n",
+    "        Sale_date = presence_of_date(entry_date.year + year_num + 1,entry_date.month,entry_date.day)\n",
+    "\n",
+    "        # Getting the 1-year sell on percentage\n",
+    "        sale_price = get_stock_prices (Piotroski_op.ticker.unique().tolist(),datetime.datetime(Sale_date.year,Sale_date.month,Sale_date.day))\n",
+    "        sale_price = pd.merge(sale_price, stock_price, how='left', left_on='Name', right_on='Name')\n",
+    "        sale_price = sale_price[sale_price.Qty_Bought.notnull()]\n",
+    "        sale_price['sale_value'] = sale_price['Qty_Bought'] * sale_price['Average_Price']\n",
+    "        sale_price['Revenue'] = sale_price['sale_value'] - sale_price['Invested']\n",
+    "\n",
+    "\n",
+    "        # Calculation of all P/L Metrics\n",
+    "        Money_Invested = stock_price.Invested.sum()\n",
+    "        Balance_Money = total_investment - Money_Invested\n",
+    "        revenue_earned_in_year = sale_price['Revenue'].sum()\n",
+    "        overall_revenue = overall_revenue + revenue_earned_in_year\n",
+    "        total_investment = total_investment + revenue_earned_in_year\n",
+    "        annual_return = 100*(revenue_earned_in_year)/Money_Invested\n",
+    "        annual_revenue.append(annual_return)\n",
+    "        years_of_sale.append(Sale_date)\n",
+    "        \n",
+    "        print('\\n')\n",
+    "        print(\" Year : \" + str(entry_date.year + year_num))\n",
+    "        print('\\n' + 'Stocks Bought')\n",
+    "        print(stock_price)\n",
+    "        print('\\n' + 'Stocks Sold')\n",
+    "        print(sale_price)\n",
+    "        print('\\n')\n",
+    "        print(\"Money Invested into business : $\" + str(Money_Invested))\n",
+    "        print(\"Balance Money left : $\" + str(Balance_Money))\n",
+    "        print(\"Revenue Earned in year \"+ str(entry_date.year + year_num) + \"  : $\"+ str(revenue_earned_in_year))\n",
+    "        print(\"Overall Revenue Earned : $\" + str(overall_revenue))\n",
+    "        print(\"Annual Return %: \\n\"+ str(annual_return))\n",
+    "        print(\"Money available for investment in next year : $\" + str(total_investment))\n",
+    "        \n",
+    "    annualized_return = sum(annual_revenue) / len(annual_revenue)\n",
+    "    revenue_percentage['date'] = years_of_sale\n",
+    "    revenue_percentage['piotroski_return'] = annual_revenue\n",
+    "    return (total_investment,annualized_return,revenue_percentage)\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 60,
+   "id": "095193b9",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Initial Parameters defined\n",
+    "total_investment = 35000\n",
+    "number_of_stocks = 20\n",
+    "entry_date = datetime.datetime(2005,2,12)\n",
+    "number_of_years = 15\n",
+    "Piotroski_score_limit = 7\n",
+    "mcap_min = 100\n",
+    "btm_percentile = 0.8"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 61,
+   "id": "d3be3a4f",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2005\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought  Invested  Piotroski_F_Score       btm         mcap\n",
+      "3124    ASR        58.0  1724.630                  8  1.346864    820.50000\n",
+      "866    TPHS       128.0  1745.280                  8  1.098651    204.42885\n",
+      "2669    PKX        37.0  1743.625                  8  1.083242  14339.32795\n",
+      "1806    SHI        44.0  1727.440                  8  0.828573   2685.60000\n",
+      "725   PHIKQ        63.0  1725.255                  8  0.807512    136.18990\n",
+      "925     TSN       105.0  1747.725                  8  0.758966   5655.06000\n",
+      "1336  NGLOY        70.0  1748.250                  8  0.730346  34227.60081\n",
+      "675     NWE        62.0  1746.850                  8  0.709063   1000.38400\n",
+      "3       AVX       145.0  1748.700                  8  0.679309   2118.69875\n",
+      "690      FE        42.0  1728.090                  8  0.659102  13031.82036\n",
+      "2001    KEP       123.0  1736.760                  7  2.345295  16674.46924\n",
+      "1142  SEMUF       107.0  1738.750                  7  1.587211    268.70400\n",
+      "3486    CIG        69.0  1738.800                  7  1.549623   2238.31794\n",
+      "3458  ROSYY       145.0  1742.900                  7  1.377167   1328.65206\n",
+      "2056  FNLYQ       104.0  1739.400                  7  1.122965    150.65564\n",
+      "966     VSH       131.0  1745.575                  7  1.111616   2494.86706\n",
+      "270     DDS        68.0  1725.160                  7  1.064751   2183.32544\n",
+      "1168    SKS       114.0  1744.770                  7  1.045430   1993.83645\n",
+      "3456  FORTY        94.0  1734.300                  7  1.017309    183.60000\n",
+      "570   PCRFY       115.0  1735.350                  7  0.994371  33243.01504\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought  Invested  \\\n",
+      "3       AVX 2006-02-13         15.885       145.0  1748.700   \n",
+      "270     DDS 2006-02-13         24.560        68.0  1725.160   \n",
+      "570   PCRFY 2006-02-13         20.570       115.0  1735.350   \n",
+      "675     NWE 2006-02-13         32.275        62.0  1746.850   \n",
+      "690      FE 2006-02-13         48.975        42.0  1728.090   \n",
+      "725   PHIKQ 2006-02-13         34.965        63.0  1725.255   \n",
+      "866    TPHS 2006-02-13         14.795       128.0  1745.280   \n",
+      "925     TSN 2006-02-13         14.545       105.0  1747.725   \n",
+      "967     VSH 2006-02-13         14.910       131.0  1745.575   \n",
+      "1144  SEMUF 2006-02-13         38.125       107.0  1738.750   \n",
+      "1170    SKS 2006-02-13         18.870       114.0  1744.770   \n",
+      "1338  NGLOY 2006-02-13         35.675        70.0  1748.250   \n",
+      "1810    SHI 2006-02-13         50.720        44.0  1727.440   \n",
+      "2005    KEP 2006-02-13         20.905       123.0  1736.760   \n",
+      "2059  FNLYQ 2006-02-13          7.810       104.0  1739.400   \n",
+      "2675    PKX 2006-02-13         53.300        37.0  1743.625   \n",
+      "3131    ASR 2006-02-13         29.495        58.0  1724.630   \n",
+      "3463  FORTY 2006-02-13         10.235        94.0  1734.300   \n",
+      "3465  ROSYY 2006-02-13         14.495       145.0  1742.900   \n",
+      "3493    CIG 2006-02-13         48.630        69.0  1738.800   \n",
+      "\n",
+      "      Piotroski_F_Score       btm         mcap  sale_value   Revenue  \n",
+      "3                   8.0  0.679309   2118.69875    2303.325   554.625  \n",
+      "270                 7.0  1.064751   2183.32544    1670.080   -55.080  \n",
+      "570                 7.0  0.994371  33243.01504    2365.550   630.200  \n",
+      "675                 8.0  0.709063   1000.38400    2001.050   254.200  \n",
+      "690                 8.0  0.659102  13031.82036    2056.950   328.860  \n",
+      "725                 8.0  0.807512    136.18990    2202.795   477.540  \n",
+      "866                 8.0  1.098651    204.42885    1893.760   148.480  \n",
+      "925                 8.0  0.758966   5655.06000    1527.225  -220.500  \n",
+      "967                 7.0  1.111616   2494.86706    1953.210   207.635  \n",
+      "1144                7.0  1.587211    268.70400    4079.375  2340.625  \n",
+      "1170                7.0  1.045430   1993.83645    2151.180   406.410  \n",
+      "1338                8.0  0.730346  34227.60081    2497.250   749.000  \n",
+      "1810                8.0  0.828573   2685.60000    2231.680   504.240  \n",
+      "2005                7.0  2.345295  16674.46924    2571.315   834.555  \n",
+      "2059                7.0  1.122965    150.65564     812.240  -927.160  \n",
+      "2675                8.0  1.083242  14339.32795    1972.100   228.475  \n",
+      "3131                8.0  1.346864    820.50000    1710.710   -13.920  \n",
+      "3463                7.0  1.017309    183.60000     962.090  -772.210  \n",
+      "3465                7.0  1.377167   1328.65206    2101.775   358.875  \n",
+      "3493                7.0  1.549623   2238.31794    3355.470  1616.670  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $34767.61\n",
+      "Balance Money left : $232.38999999999942\n",
+      "Revenue Earned in year 2005  : $7651.5199999999995\n",
+      "Overall Revenue Earned : $7651.5199999999995\n",
+      "Annual Return %: \n",
+      "22.00760995650837\n",
+      "Money available for investment in next year : $42651.52\n",
+      "\n",
+      "\n",
+      " Year : 2006\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm          mcap\n",
+      "3587    SBS       108.0  2117.34000                  8  1.891115   1921.796660\n",
+      "3141  HEDYY       544.0  2129.76000                  8  1.792450    114.093000\n",
+      "2567   PSEM       224.0  2130.24000                  8  0.844365    214.554120\n",
+      "1701    KAI       114.0  2132.37000                  8  0.828325    250.656500\n",
+      "828     SJM        50.0  2091.50000                  8  0.772898   2235.817740\n",
+      "574   PCRFY       103.0  2118.71000                  8  0.676154  48919.016340\n",
+      "2368    PAG        54.0  2121.66000                  8  0.670519   1708.724200\n",
+      "3432   HERB       941.0  2131.36500                  7  3.734793    294.684300\n",
+      "2448    ELP       199.0  2128.30500                  7  2.434975    965.504130\n",
+      "2377    CNH       104.0  2132.52000                  7  2.012880   2500.397100\n",
+      "738   SENEA       107.0  2119.13500                  7  1.195845    136.550314\n",
+      "1605  ITPOF       258.0  2128.50000                  7  1.182425    367.393260\n",
+      "3592  ROSYY       147.0  2130.76500                  7  1.040015   1657.778850\n",
+      "2714    RLH       207.0  2126.92500                  7  1.031692    117.522450\n",
+      "869    TPHS       144.0  2130.48000                  7  0.965591    218.036400\n",
+      "38     AM.1       103.0  2124.89000                  7  0.963608   1266.101040\n",
+      "177    CSTW         3.0  1837.50000                  7  0.956840    156.975000\n",
+      "2003    TGS       401.0  2129.31000                  7  0.953030    837.397730\n",
+      "2015  MGS.2       527.0  2129.08000                  7  0.939773    239.051400\n",
+      "1317    HNR       251.0  2130.97745                  7  0.905821    328.444560\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought    Invested  \\\n",
+      "38     AM.1 2007-02-12         24.035       103.0  2124.89000   \n",
+      "177    CSTW 2007-02-12        620.000         3.0  1837.50000   \n",
+      "575   PCRFY 2007-02-12         19.295       103.0  2118.71000   \n",
+      "740   SENEA 2007-02-12         26.380       107.0  2119.13500   \n",
+      "830     SJM 2007-02-12         48.110        50.0  2091.50000   \n",
+      "871    TPHS 2007-02-12         19.650       144.0  2130.48000   \n",
+      "1320    HNR 2007-02-12         10.125       251.0  2130.97745   \n",
+      "1610  ITPOF 2007-02-12          4.885       258.0  2128.50000   \n",
+      "1707    KAI 2007-02-12         26.435       114.0  2132.37000   \n",
+      "2009    TGS 2007-02-12          6.420       401.0  2129.31000   \n",
+      "2021  MGS.2 2007-02-12          5.380       527.0  2129.08000   \n",
+      "2374    PAG 2007-02-12         24.200        54.0  2121.66000   \n",
+      "2383    CNH 2007-02-12         34.445       104.0  2132.52000   \n",
+      "2454    ELP 2007-02-12         11.845       199.0  2128.30500   \n",
+      "2573   PSEM 2007-02-12         10.020       224.0  2130.24000   \n",
+      "2720    RLH 2007-02-12         11.550       207.0  2126.92500   \n",
+      "3147  HEDYY 2007-02-12          3.775       544.0  2129.76000   \n",
+      "3439   HERB 2007-02-12          1.500       941.0  2131.36500   \n",
+      "3594    SBS 2007-02-12         34.450       108.0  2117.34000   \n",
+      "3599  ROSYY 2007-02-12         46.750       147.0  2130.76500   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value     Revenue  \n",
+      "38                  7.0  0.963608   1266.101040    2475.605   350.71500  \n",
+      "177                 7.0  0.956840    156.975000    1860.000    22.50000  \n",
+      "575                 8.0  0.676154  48919.016340    1987.385  -131.32500  \n",
+      "740                 7.0  1.195845    136.550314    2822.660   703.52500  \n",
+      "830                 8.0  0.772898   2235.817740    2405.500   314.00000  \n",
+      "871                 7.0  0.965591    218.036400    2829.600   699.12000  \n",
+      "1320                7.0  0.905821    328.444560    2541.375   410.39755  \n",
+      "1610                7.0  1.182425    367.393260    1260.330  -868.17000  \n",
+      "1707                8.0  0.828325    250.656500    3013.590   881.22000  \n",
+      "2009                7.0  0.953030    837.397730    2574.420   445.11000  \n",
+      "2021                7.0  0.939773    239.051400    2835.260   706.18000  \n",
+      "2374                8.0  0.670519   1708.724200    1306.800  -814.86000  \n",
+      "2383                7.0  2.012880   2500.397100    3582.280  1449.76000  \n",
+      "2454                7.0  2.434975    965.504130    2357.155   228.85000  \n",
+      "2573                8.0  0.844365    214.554120    2244.480   114.24000  \n",
+      "2720                7.0  1.031692    117.522450    2390.850   263.92500  \n",
+      "3147                8.0  1.792450    114.093000    2053.600   -76.16000  \n",
+      "3439                7.0  3.734793    294.684300    1411.500  -719.86500  \n",
+      "3594                8.0  1.891115   1921.796660    3720.600  1603.26000  \n",
+      "3599                7.0  1.040015   1657.778850    6872.250  4741.48500  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $42221.332449999994\n",
+      "Balance Money left : $430.1875500000024\n",
+      "Revenue Earned in year 2006  : $10323.90755\n",
+      "Overall Revenue Earned : $17975.42755\n",
+      "Annual Return %: \n",
+      "24.451875274722653\n",
+      "Money available for investment in next year : $52975.42754999999\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2007\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought   Invested  Piotroski_F_Score       btm          mcap\n",
+      "2026  MGS.2       492.0  2646.9600                  8  1.369605    231.652190\n",
+      "345    FARM       123.0  2636.5050                  8  0.772506    348.506000\n",
+      "1358   NLOK       148.0  2635.1400                  8  0.745603  15559.914100\n",
+      "2967  EPCYY       165.0  2640.8250                  8  0.743192    982.765000\n",
+      "676     NOC        35.0  2601.5500                  8  0.709469  23418.919400\n",
+      "3120   ENTG       246.0  2638.3377                  8  0.707220   1436.582220\n",
+      "1067  SVCBY        49.0  2637.1310                  8  0.702631  12279.037991\n",
+      "1753    SGA       284.0  2644.0400                  8  0.701910    194.093170\n",
+      "1078   KSPN       462.0  2644.9500                  7  2.272777    173.006400\n",
+      "1792    NTZ       285.0  2646.2250                  7  1.356567    465.828890\n",
+      "2194  BESIY       440.0  2646.6000                  7  1.290300    198.663810\n",
+      "1911  SFN.2       304.0  2640.2400                  7  1.121025    420.277950\n",
+      "3052     KT       115.0  2640.4000                  7  1.090239  10550.416500\n",
+      "395     GTN       299.0  2644.6550                  7  1.072189    354.185600\n",
+      "3700    PAC        62.0  2631.2800                  7  1.060654   2198.559000\n",
+      "1588  VITRY       420.0  2648.1000                  7  1.049520    629.681940\n",
+      "1210   VIAC        83.0  2626.1200                  7  0.981793  23958.712000\n",
+      "3418  GRP.U        73.0  2637.4900                  7  0.972131   1725.381000\n",
+      "3788  OIBRQ       183.0  2642.5200                  7  0.956199   2708.996400\n",
+      "3795  FORTY       212.0  2639.4000                  7  0.947217    161.832000\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought   Invested  \\\n",
+      "347    FARM 2008-02-12       23.31000       123.0  2636.5050   \n",
+      "398     GTN 2008-02-12        6.47000       299.0  2644.6550   \n",
+      "679     NOC 2008-02-12       79.58000        35.0  2601.5500   \n",
+      "1070  SVCBY 2008-02-12       15.78900        49.0  2637.1310   \n",
+      "1081   KSPN 2008-02-12        4.33500       462.0  2644.9500   \n",
+      "1213   VIAC 2008-02-12       24.74500        83.0  2626.1200   \n",
+      "1360   NLOK 2008-02-12       17.85500       148.0  2635.1400   \n",
+      "1589  VITRY 2008-02-12        5.36500       420.0  2648.1000   \n",
+      "1754    SGA 2008-02-12        5.94500       284.0  2644.0400   \n",
+      "1793    NTZ 2008-02-12        3.88000       285.0  2646.2250   \n",
+      "1912  SFN.2 2008-02-12        6.49500       304.0  2640.2400   \n",
+      "2028  MGS.2 2008-02-12        3.49995       492.0  2646.9600   \n",
+      "2195  BESIY 2008-02-12        4.68400       440.0  2646.6000   \n",
+      "2970  EPCYY 2008-02-12       14.34400       165.0  2640.8250   \n",
+      "3055     KT 2008-02-12       26.06000       115.0  2640.4000   \n",
+      "3123   ENTG 2008-02-12        7.36500       246.0  2638.3377   \n",
+      "3420  GRP.U 2008-02-12       23.82000        73.0  2637.4900   \n",
+      "3704    PAC 2008-02-12       45.25000        62.0  2631.2800   \n",
+      "3794  OIBRQ 2008-02-12       29.92000       183.0  2642.5200   \n",
+      "3801  FORTY 2008-02-12       12.35000       212.0  2639.4000   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value    Revenue  \n",
+      "347                 8.0  0.772506    348.506000   2867.1300   230.6250  \n",
+      "398                 7.0  1.072189    354.185600   1934.5300  -710.1250  \n",
+      "679                 8.0  0.709469  23418.919400   2785.3000   183.7500  \n",
+      "1070                8.0  0.702631  12279.037991    773.6610 -1863.4700  \n",
+      "1081                7.0  2.272777    173.006400   2002.7700  -642.1800  \n",
+      "1213                7.0  0.981793  23958.712000   2053.8350  -572.2850  \n",
+      "1360                8.0  0.745603  15559.914100   2642.5400     7.4000  \n",
+      "1589                7.0  1.049520    629.681940   2253.3000  -394.8000  \n",
+      "1754                8.0  0.701910    194.093170   1688.3800  -955.6600  \n",
+      "1793                7.0  1.356567    465.828890   1105.8000 -1540.4250  \n",
+      "1912                7.0  1.121025    420.277950   1974.4800  -665.7600  \n",
+      "2028                8.0  1.369605    231.652190   1721.9754  -924.9846  \n",
+      "2195                7.0  1.290300    198.663810   2060.9600  -585.6400  \n",
+      "2970                8.0  0.743192    982.765000   2366.7600  -274.0650  \n",
+      "3055                7.0  1.090239  10550.416500   2996.9000   356.5000  \n",
+      "3123                8.0  0.707220   1436.582220   1811.7900  -826.5477  \n",
+      "3420                7.0  0.972131   1725.381000   1738.8600  -898.6300  \n",
+      "3704                7.0  1.060654   2198.559000   2805.5000   174.2200  \n",
+      "3794                7.0  0.956199   2708.996400   5475.3600  2832.8400  \n",
+      "3801                7.0  0.947217    161.832000   2618.2000   -21.2000  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $52768.4687\n",
+      "Balance Money left : $206.95884999999544\n",
+      "Revenue Earned in year 2007  : $-7090.437299999997\n",
+      "Overall Revenue Earned : $10884.990250000003\n",
+      "Annual Return %: \n",
+      "-13.43688281028325\n",
+      "Money available for investment in next year : $45884.990249999995\n",
+      "\n",
+      "\n",
+      " Year : 2008\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought  Invested  Piotroski_F_Score       btm          mcap\n",
+      "866     SCX       148.0  2282.900                  8  1.473203    120.820400\n",
+      "641   NIPNY       604.0  2293.992                  8  1.301116   7730.632948\n",
+      "3766    PAC        50.0  2262.500                  8  0.964455   2503.743000\n",
+      "2080   ISSI       405.0  2292.300                  8  0.925624    230.926500\n",
+      "3765   CODI       157.0  2292.200                  8  0.921502    469.722500\n",
+      "3291   CCRN       191.0  2290.090                  8  0.868328    449.642240\n",
+      "237     CTB       126.0  2279.970                  8  0.800944    989.195960\n",
+      "2517   INDT        68.0  2272.220                  8  0.744156    186.658450\n",
+      "420     HVT       231.0  2285.745                  7  1.446362    192.790550\n",
+      "2076    CYD       288.0  2292.480                  7  1.305154    369.325880\n",
+      "3352   CSCX       276.0  2290.938                  7  1.233115    184.306380\n",
+      "1600    WNC       261.0  2292.885                  7  1.219773    229.492670\n",
+      "513   KELYA       121.0  2285.085                  7  1.204942    654.163620\n",
+      "1745   BBOX        72.0  2277.360                  7  1.184884    540.368600\n",
+      "873     SUP       124.0  2290.280                  7  1.137732    483.921610\n",
+      "1812   PERY       136.0  2280.720                  7  1.075016    254.439900\n",
+      "468    IDTI       279.0  2291.985                  7  1.059674   1529.548260\n",
+      "1051   TECD        68.0  2284.460                  7  1.058255   1814.988960\n",
+      "1498   CHUX       192.0  2285.760                  7  1.054127    346.757040\n",
+      "1402  NSANY       132.0  2281.620                  7  1.033437  33983.164800\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought  Invested  \\\n",
+      "237     CTB 2009-02-12          5.215       126.0  2279.970   \n",
+      "420     HVT 2009-02-12          8.190       231.0  2285.745   \n",
+      "468    IDTI 2009-02-12          5.595       279.0  2291.985   \n",
+      "513   KELYA 2009-02-12         10.255       121.0  2285.085   \n",
+      "863     SCX 2009-02-12         11.185       148.0  2282.900   \n",
+      "870     SUP 2009-02-12          9.595       124.0  2290.280   \n",
+      "1048   TECD 2009-02-12         19.220        68.0  2284.460   \n",
+      "1400  NSANY 2009-02-12          5.965       132.0  2281.620   \n",
+      "1496   CHUX 2009-02-12          2.510       192.0  2285.760   \n",
+      "1598    WNC 2009-02-12          3.710       261.0  2292.885   \n",
+      "1742   BBOX 2009-02-12         22.315        72.0  2277.360   \n",
+      "1809   PERY 2009-02-12          4.335       136.0  2280.720   \n",
+      "2072    CYD 2009-02-12          3.935       288.0  2292.480   \n",
+      "2076   ISSI 2009-02-12          1.715       405.0  2292.300   \n",
+      "2512   INDT 2009-02-12         33.785        68.0  2272.220   \n",
+      "3287   CCRN 2009-02-12          7.385       191.0  2290.090   \n",
+      "3348   CSCX 2009-02-12          5.140       276.0  2290.938   \n",
+      "3761   CODI 2009-02-12         10.115       157.0  2292.200   \n",
+      "3762    PAC 2009-02-12         18.975        50.0  2262.500   \n",
+      "\n",
+      "      Piotroski_F_Score       btm         mcap  sale_value   Revenue  \n",
+      "237                 8.0  0.800944    989.19596     657.090 -1622.880  \n",
+      "420                 7.0  1.446362    192.79055    1891.890  -393.855  \n",
+      "468                 7.0  1.059674   1529.54826    1561.005  -730.980  \n",
+      "513                 7.0  1.204942    654.16362    1240.855 -1044.230  \n",
+      "863                 8.0  1.473203    120.82040    1655.380  -627.520  \n",
+      "870                 7.0  1.137732    483.92161    1189.780 -1100.500  \n",
+      "1048                7.0  1.058255   1814.98896    1306.960  -977.500  \n",
+      "1400                7.0  1.033437  33983.16480     787.380 -1494.240  \n",
+      "1496                7.0  1.054127    346.75704     481.920 -1803.840  \n",
+      "1598                7.0  1.219773    229.49267     968.310 -1324.575  \n",
+      "1742                7.0  1.184884    540.36860    1606.680  -670.680  \n",
+      "1809                7.0  1.075016    254.43990     589.560 -1691.160  \n",
+      "2072                7.0  1.305154    369.32588    1133.280 -1159.200  \n",
+      "2076                8.0  0.925624    230.92650     694.575 -1597.725  \n",
+      "2512                8.0  0.744156    186.65845    2297.380    25.160  \n",
+      "3287                8.0  0.868328    449.64224    1410.535  -879.555  \n",
+      "3348                7.0  1.233115    184.30638    1418.640  -872.298  \n",
+      "3761                8.0  0.921502    469.72250    1588.055  -704.145  \n",
+      "3762                8.0  0.964455   2503.74300     948.750 -1313.750  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $45705.49\n",
+      "Balance Money left : $179.50024999999732\n",
+      "Revenue Earned in year 2008  : $-19983.472999999998\n",
+      "Overall Revenue Earned : $-9098.482749999996\n",
+      "Annual Return %: \n",
+      "-43.72225962351568\n",
+      "Money available for investment in next year : $25901.517249999997\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2009\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought  Invested  Piotroski_F_Score       btm          mcap\n",
+      "1954   CBRI       313.0  1292.377                  8  1.565454    289.008850\n",
+      "154     CTS       257.0  1291.425                  8  1.492185    185.753120\n",
+      "387     GCO        87.0  1284.555                  8  1.490534    296.357600\n",
+      "734    PDCE        82.0  1280.840                  8  1.429794    357.800550\n",
+      "3858  BBEPQ       184.0  1292.600                  7  3.645786    371.083800\n",
+      "2032    TGS       612.0  1294.380                  7  2.764761    322.580860\n",
+      "3406    MWE       114.0  1293.330                  7  2.664806    451.987200\n",
+      "4173    EBR       109.0  1284.020                  7  2.394305  12648.427690\n",
+      "2756  UVYZY       780.0  1294.800                  7  2.291088    313.298360\n",
+      "3875   EROC       177.0  1292.631                  7  2.095399    347.291850\n",
+      "2912   SWIR       321.0  1293.630                  7  1.983496    180.211130\n",
+      "1046   TECD        67.0  1287.740                  7  1.897963    905.934640\n",
+      "1684   FINL       292.0  1293.560                  7  1.892439    224.257700\n",
+      "4186  OGZPY        93.0  1283.400                  7  1.868274  84324.375000\n",
+      "2435    GEL       109.0  1287.290                  7  1.845547    342.802416\n",
+      "2962  TCPTF       314.0  1293.680                  7  1.675928    487.789470\n",
+      "4271   HIMX       744.0  1294.560                  7  1.513170    306.093200\n",
+      "4090  AREXQ       177.0  1291.215                  7  1.480459    151.178110\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought  Invested  \\\n",
+      "154     CTS 2010-02-12          7.485       257.0  1291.425   \n",
+      "386     GCO 2010-02-12         21.230        87.0  1284.555   \n",
+      "735    PDCE 2010-02-12         21.015        82.0  1280.840   \n",
+      "1046   TECD 2010-02-12         41.000        67.0  1287.740   \n",
+      "1683   FINL 2010-02-12         10.745       292.0  1293.560   \n",
+      "1951   CBRI 2010-02-12          3.240       313.0  1292.377   \n",
+      "2027    TGS 2010-02-12          2.905       612.0  1294.380   \n",
+      "2429    GEL 2010-02-12         19.115       109.0  1287.290   \n",
+      "2754  UVYZY 2010-02-12          5.620       780.0  1294.800   \n",
+      "2911   SWIR 2010-02-12          9.345       321.0  1293.630   \n",
+      "2961  TCPTF 2010-02-12         12.590       314.0  1293.680   \n",
+      "3405    MWE 2010-02-12         27.585       114.0  1293.330   \n",
+      "3857  BBEPQ 2010-02-12         14.875       184.0  1292.600   \n",
+      "3874   EROC 2010-02-12          5.665       177.0  1292.631   \n",
+      "4090  AREXQ 2010-02-12          8.480       177.0  1291.215   \n",
+      "4173    EBR 2010-02-12         13.250       109.0  1284.020   \n",
+      "4186  OGZPY 2010-02-12         22.380        93.0  1283.400   \n",
+      "4271   HIMX 2010-02-12          2.985       744.0  1294.560   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value   Revenue  \n",
+      "154                 8.0  1.492185    185.753120    1923.645   632.220  \n",
+      "386                 8.0  1.490534    296.357600    1847.010   562.455  \n",
+      "735                 8.0  1.429794    357.800550    1723.230   442.390  \n",
+      "1046                7.0  1.897963    905.934640    2747.000  1459.260  \n",
+      "1683                7.0  1.892439    224.257700    3137.540  1843.980  \n",
+      "1951                8.0  1.565454    289.008850    1014.120  -278.257  \n",
+      "2027                7.0  2.764761    322.580860    1777.860   483.480  \n",
+      "2429                7.0  1.845547    342.802416    2083.535   796.245  \n",
+      "2754                7.0  2.291088    313.298360    4383.600  3088.800  \n",
+      "2911                7.0  1.983496    180.211130    2999.745  1706.115  \n",
+      "2961                7.0  1.675928    487.789470    3953.260  2659.580  \n",
+      "3405                7.0  2.664806    451.987200    3144.690  1851.360  \n",
+      "3857                7.0  3.645786    371.083800    2737.000  1444.400  \n",
+      "3874                7.0  2.095399    347.291850    1002.705  -289.926  \n",
+      "4090                7.0  1.480459    151.178110    1500.960   209.745  \n",
+      "4173                7.0  2.394305  12648.427690    1444.250   160.230  \n",
+      "4186                7.0  1.868274  84324.375000    2081.340   797.940  \n",
+      "4271                7.0  1.513170    306.093200    2220.840   926.280  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $23226.033\n",
+      "Balance Money left : $2675.4842499999977\n",
+      "Revenue Earned in year 2009  : $18496.296999999995\n",
+      "Overall Revenue Earned : $9397.81425\n",
+      "Annual Return %: \n",
+      "79.6360575221778\n",
+      "Money available for investment in next year : $44397.814249999996\n",
+      "\n",
+      "\n",
+      " Year : 2010\n",
+      "\n",
+      "Stocks Bought\n",
+      "        Name  Qty_Bought  Invested  Piotroski_F_Score       btm          mcap\n",
+      "4339  CHEL10       608.0  2219.200                  8  1.380258    176.133750\n",
+      "2316   GSHHY       108.0  2214.000                  8  1.150861   2874.504590\n",
+      "258      WEN       470.0  2216.050                  8  1.099829   2124.251080\n",
+      "4321   CRESY       178.0  2212.896                  8  1.075958    444.662220\n",
+      "2763   UVYZY       394.0  2214.280                  8  0.981100    807.470000\n",
+      "4366     IBA       110.0  2213.750                  8  0.971498   1150.000000\n",
+      "4396     CHA        52.0  2186.340                  8  0.969027  33522.200080\n",
+      "2095     IRS       237.0  2212.395                  7  1.995276    277.187720\n",
+      "2032     TGS       764.0  2219.420                  7  1.820263    463.985080\n",
+      "2447     LAD       396.0  2219.580                  7  1.447886    212.059560\n",
+      "4183     XIN       538.0  2216.560                  7  1.320043    338.557800\n",
+      "4335   FORTY       195.0  2209.350                  7  1.284538    146.388000\n",
+      "4378    DELT       282.0  2213.700                  7  1.187888    148.129344\n",
+      "3734    BDBD       398.0  2216.860                  7  1.173559    375.786000\n",
+      "1744    AHCI       832.0  2217.280                  7  1.169197    125.960800\n",
+      "4015     UFS        44.0  2200.220                  7  1.116111   2385.068040\n",
+      "2999    KEYN       224.0  2217.600                  7  1.097083    136.744430\n",
+      "2077     CYD       159.0  2207.715                  7  1.079789    549.330320\n",
+      "2524   SRT.2       304.0  2217.832                  7  1.048427    111.324840\n",
+      "1987     BTH        79.0  2202.520                  7  1.037448    247.023460\n",
+      "\n",
+      "Stocks Sold\n",
+      "        Name       Date  Average_Price  Qty_Bought  Invested  \\\n",
+      "251      WEN 2011-02-14        4.88000       470.0  2216.050   \n",
+      "1690    AHCI 2011-02-14        2.18500       832.0  2217.280   \n",
+      "1921     BTH 2011-02-14       34.50500        79.0  2202.520   \n",
+      "1965     TGS 2011-02-14        5.48000       764.0  2219.420   \n",
+      "2008     CYD 2011-02-14       29.01000       159.0  2207.715   \n",
+      "2024     IRS 2011-02-14       15.09000       237.0  2212.395   \n",
+      "2236   GSHHY 2011-02-14       20.02500       108.0  2214.000   \n",
+      "2359     LAD 2011-02-14       15.37975       396.0  2219.580   \n",
+      "2432   SRT.2 2011-02-14        5.56500       304.0  2217.832   \n",
+      "2664   UVYZY 2011-02-14       10.55000       394.0  2214.280   \n",
+      "2888    KEYN 2011-02-14       18.39500       224.0  2217.600   \n",
+      "3593    BDBD 2011-02-14        4.16500       398.0  2216.860   \n",
+      "3856     UFS 2011-02-14       92.05500        44.0  2200.220   \n",
+      "4012     XIN 2011-02-14        2.44495       538.0  2216.560   \n",
+      "4143   CRESY 2011-02-14       18.12500       178.0  2212.896   \n",
+      "4157   FORTY 2011-02-14       19.96000       195.0  2209.350   \n",
+      "4161  CHEL10 2011-02-14        4.50000       608.0  2219.200   \n",
+      "4188     IBA 2011-02-14       26.19000       110.0  2213.750   \n",
+      "4200    DELT 2011-02-14        8.16100       282.0  2213.700   \n",
+      "4217     CHA 2011-02-14       57.89000        52.0  2186.340   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value    Revenue  \n",
+      "251                 8.0  1.099829   2124.251080   2293.6000    77.5500  \n",
+      "1690                7.0  1.169197    125.960800   1817.9200  -399.3600  \n",
+      "1921                7.0  1.037448    247.023460   2725.8950   523.3750  \n",
+      "1965                7.0  1.820263    463.985080   4186.7200  1967.3000  \n",
+      "2008                7.0  1.079789    549.330320   4612.5900  2404.8750  \n",
+      "2024                7.0  1.995276    277.187720   3576.3300  1363.9350  \n",
+      "2236                8.0  1.150861   2874.504590   2162.7000   -51.3000  \n",
+      "2359                7.0  1.447886    212.059560   6090.3810  3870.8010  \n",
+      "2432                7.0  1.048427    111.324840   1691.7600  -526.0720  \n",
+      "2664                8.0  0.981100    807.470000   4156.7000  1942.4200  \n",
+      "2888                7.0  1.097083    136.744430   4120.4800  1902.8800  \n",
+      "3593                7.0  1.173559    375.786000   1657.6700  -559.1900  \n",
+      "3856                7.0  1.116111   2385.068040   4050.4200  1850.2000  \n",
+      "4012                7.0  1.320043    338.557800   1315.3831  -901.1769  \n",
+      "4143                8.0  1.075958    444.662220   3226.2500  1013.3540  \n",
+      "4157                7.0  1.284538    146.388000   3892.2000  1682.8500  \n",
+      "4161                8.0  1.380258    176.133750   2736.0000   516.8000  \n",
+      "4188                8.0  0.971498   1150.000000   2880.9000   667.1500  \n",
+      "4200                7.0  1.187888    148.129344   2301.4020    87.7020  \n",
+      "4217                8.0  0.969027  33522.200080   3010.2800   823.9400  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $44247.547999999995\n",
+      "Balance Money left : $150.26625000000058\n",
+      "Revenue Earned in year 2010  : $18258.0331\n",
+      "Overall Revenue Earned : $27655.84735\n",
+      "Annual Return %: \n",
+      "41.263378255445936\n",
+      "Money available for investment in next year : $62655.84735\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2011\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm  \\\n",
+      "3048   IRCP       191.0  3128.58000                  8  1.233166   \n",
+      "4085  EDSFF       401.0  3125.99550                  8  1.111612   \n",
+      "2533  DLAKY       149.0  3113.80200                  8  1.082184   \n",
+      "105    BNHN       342.0  3129.12900                  8  1.081310   \n",
+      "516      LM        87.0  3104.16000                  8  1.064371   \n",
+      "2551  SEOAY       271.0  3130.05000                  8  1.012294   \n",
+      "4277  AUOTY       343.0  3131.59000                  8  1.000513   \n",
+      "1266  REPYY        98.0  3121.30000                  8  0.939036   \n",
+      "2619   ADPI       245.0  3123.44375                  8  0.937487   \n",
+      "3014   OIIM       379.0  3128.64500                  8  0.870589   \n",
+      "2270  SSINQ       182.0  3124.03000                  8  0.866711   \n",
+      "3342   HERB      1509.0  3131.17500                  7  4.137491   \n",
+      "2560  AFLYY       187.0  3118.78600                  7  1.971242   \n",
+      "4219  OIBRQ       132.0  3113.88000                  7  1.581055   \n",
+      "4227  OGZPY       110.0  3124.00000                  7  1.426150   \n",
+      "357   FUJIY        89.0  3116.78000                  7  1.390229   \n",
+      "4228  LUKOY        47.0  3067.92500                  7  1.343297   \n",
+      "2184  GSHHY       156.0  3123.90000                  7  1.322115   \n",
+      "580      MU       267.0  3131.91000                  7  1.248642   \n",
+      "1916    FBR       206.0  3118.84000                  7  1.235300   \n",
+      "\n",
+      "               mcap  \n",
+      "3048     171.080000  \n",
+      "4085     209.457080  \n",
+      "2533   10105.775784  \n",
+      "105      135.690100  \n",
+      "516     5421.403710  \n",
+      "2551    8130.672200  \n",
+      "4277    9197.786100  \n",
+      "1266   34110.912220  \n",
+      "2619     207.972940  \n",
+      "3014     206.412000  \n",
+      "2270     564.789000  \n",
+      "3342     424.965780  \n",
+      "2560    4929.984906  \n",
+      "4219    4311.350280  \n",
+      "4227  143606.250000  \n",
+      "357    14971.282566  \n",
+      "4228   44068.422000  \n",
+      "2184    2769.668050  \n",
+      "580     6422.978250  \n",
+      "1916    7486.960000  \n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought   Invested  \\\n",
+      "98     BNHN 2012-02-13        11.3400       342.0  3129.1290   \n",
+      "346   FUJIY 2012-02-13        23.5240        89.0  3116.7800   \n",
+      "501      LM 2012-02-13        27.6400        87.0  3104.1600   \n",
+      "563      MU 2012-02-13         7.8600       267.0  3131.9100   \n",
+      "1216  REPYY 2012-02-13        27.7680        98.0  3121.3000   \n",
+      "1841    FBR 2012-02-13         9.3000       206.0  3118.8400   \n",
+      "2098  GSHHY 2012-02-13        19.2550       156.0  3123.9000   \n",
+      "2181  SSINQ 2012-02-13        15.2850       182.0  3124.0300   \n",
+      "2428  DLAKY 2012-02-13        14.1550       149.0  3113.8020   \n",
+      "2446  SEOAY 2012-02-13         7.3220       271.0  3130.0500   \n",
+      "2455  AFLYY 2012-02-13         6.4300       187.0  3118.7860   \n",
+      "2889   OIIM 2012-02-13         5.1350       379.0  3128.6450   \n",
+      "2921   IRCP 2012-02-13        16.1500       191.0  3128.5800   \n",
+      "3199   HERB 2012-02-13         0.7795      1509.0  3131.1750   \n",
+      "3904  EDSFF 2012-02-13         4.1650       401.0  3125.9955   \n",
+      "4036  OIBRQ 2012-02-13        19.2000       132.0  3113.8800   \n",
+      "4044  OGZPY 2012-02-13        12.8210       110.0  3124.0000   \n",
+      "4045  LUKOY 2012-02-13        61.7250        47.0  3067.9250   \n",
+      "4094  AUOTY 2012-02-13         5.5305       343.0  3131.5900   \n",
+      "\n",
+      "      Piotroski_F_Score       btm           mcap  sale_value    Revenue  \n",
+      "98                  8.0  1.081310     135.690100   3878.2800   749.1510  \n",
+      "346                 7.0  1.390229   14971.282566   2093.6360 -1023.1440  \n",
+      "501                 8.0  1.064371    5421.403710   2404.6800  -699.4800  \n",
+      "563                 7.0  1.248642    6422.978250   2098.6200 -1033.2900  \n",
+      "1216                8.0  0.939036   34110.912220   2721.2640  -400.0360  \n",
+      "1841                7.0  1.235300    7486.960000   1915.8000 -1203.0400  \n",
+      "2098                7.0  1.322115    2769.668050   3003.7800  -120.1200  \n",
+      "2181                8.0  0.866711     564.789000   2781.8700  -342.1600  \n",
+      "2428                8.0  1.082184   10105.775784   2109.0950 -1004.7070  \n",
+      "2446                8.0  1.012294    8130.672200   1984.2620 -1145.7880  \n",
+      "2455                7.0  1.971242    4929.984906   1202.4100 -1916.3760  \n",
+      "2889                8.0  0.870589     206.412000   1946.1650 -1182.4800  \n",
+      "2921                8.0  1.233166     171.080000   3084.6500   -43.9300  \n",
+      "3199                7.0  4.137491     424.965780   1176.2655 -1954.9095  \n",
+      "3904                8.0  1.111612     209.457080   1670.1650 -1455.8305  \n",
+      "4036                7.0  1.581055    4311.350280   2534.4000  -579.4800  \n",
+      "4044                7.0  1.426150  143606.250000   1410.3100 -1713.6900  \n",
+      "4045                7.0  1.343297   44068.422000   2901.0750  -166.8500  \n",
+      "4094                8.0  1.000513    9197.786100   1896.9615 -1234.6285  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $62407.921250000014\n",
+      "Balance Money left : $247.9260999999824\n",
+      "Revenue Earned in year 2011  : $-16470.788500000002\n",
+      "Overall Revenue Earned : $11185.058849999998\n",
+      "Annual Return %: \n",
+      "-26.39214409020233\n",
+      "Money available for investment in next year : $46185.058849999994\n",
+      "\n",
+      "\n",
+      " Year : 2012\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm          mcap\n",
+      "2037  GSHHY       119.0  2291.34500                  8  1.610701   2499.076440\n",
+      "2448   CRAI       110.0  2293.50000                  8  1.305848    204.927360\n",
+      "2151    MWW       328.0  2305.84000                  8  1.248005    932.790040\n",
+      "2996   NDAQ        87.0  2284.62000                  8  1.169782   4253.784030\n",
+      "1773    FDP        94.0  2295.95000                  8  1.169396   1444.677640\n",
+      "815    ANDV        83.0  2282.91500                  8  1.121864   3269.559040\n",
+      "690     PNM       127.0  2306.32000                  8  1.083943   1452.092420\n",
+      "3677    XIN       974.0  2308.38000                  7  4.972358    127.631000\n",
+      "1698  GCSAY       280.0  2303.00000                  7  2.571871    193.756600\n",
+      "113     RFP       151.0  2300.48500                  7  2.418593   1412.805000\n",
+      "3746  PPPMF       811.0  2307.29500                  7  1.770876    284.197200\n",
+      "2702   ASIA       197.0  2298.00500                  7  1.739286    561.332500\n",
+      "3996   PSHG       341.0  2308.57000                  7  1.648265    125.302680\n",
+      "4074  LUKOY        37.0  2283.82500                  7  1.647858  41046.021323\n",
+      "1601    RCL        75.0  2302.12500                  7  1.563809   5376.501890\n",
+      "1486    BSX       385.0  2308.07500                  7  1.467184   7737.953700\n",
+      "1182    VLO        93.0  2296.05375                  7  1.401171  11720.913650\n",
+      "2901   UDRL       337.0  2308.45000                  7  1.368390    144.443520\n",
+      "959    SXCL        87.0  2292.45000                  7  1.344523    261.408000\n",
+      "1633    SIM       297.0  2309.17500                  7  1.344424   1177.911300\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought    Invested  \\\n",
+      "111     RFP 2013-02-12        13.8450       151.0  2300.48500   \n",
+      "672     PNM 2013-02-12        21.1450       127.0  2306.32000   \n",
+      "791    ANDV 2013-02-12        54.0225        83.0  2282.91500   \n",
+      "931    SXCL 2013-02-12        25.1250        87.0  2292.45000   \n",
+      "1142    VLO 2013-02-12        45.8950        93.0  2296.05375   \n",
+      "1431    BSX 2013-02-12         7.6300       385.0  2308.07500   \n",
+      "1543    RCL 2013-02-12        36.4300        75.0  2302.12500   \n",
+      "1574    SIM 2013-02-12        14.5655       297.0  2309.17500   \n",
+      "1635  GCSAY 2013-02-12         5.0750       280.0  2303.00000   \n",
+      "1706    FDP 2013-02-12        26.9950        94.0  2295.95000   \n",
+      "1958  GSHHY 2013-02-12        20.6550       119.0  2291.34500   \n",
+      "2067    MWW 2013-02-12         5.4950       328.0  2305.84000   \n",
+      "2351   CRAI 2013-02-12        20.2500       110.0  2293.50000   \n",
+      "2595   ASIA 2013-02-12        11.0325       197.0  2298.00500   \n",
+      "2870   NDAQ 2013-02-12        30.7900        87.0  2284.62000   \n",
+      "3523    XIN 2013-02-12         4.5050       974.0  2308.38000   \n",
+      "3589  PPPMF 2013-02-12         6.3225       811.0  2307.29500   \n",
+      "3829   PSHG 2013-02-12         6.4600       341.0  2308.57000   \n",
+      "3908  LUKOY 2013-02-12        66.1050        37.0  2283.82500   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value     Revenue  \n",
+      "111                 7.0  2.418593   1412.805000   2090.5950  -209.89000  \n",
+      "672                 8.0  1.083943   1452.092420   2685.4150   379.09500  \n",
+      "791                 8.0  1.121864   3269.559040   4483.8675  2200.95250  \n",
+      "931                 7.0  1.344523    261.408000   2185.8750  -106.57500  \n",
+      "1142                7.0  1.401171  11720.913650   4268.2350  1972.18125  \n",
+      "1431                7.0  1.467184   7737.953700   2937.5500   629.47500  \n",
+      "1543                7.0  1.563809   5376.501890   2732.2500   430.12500  \n",
+      "1574                7.0  1.344424   1177.911300   4325.9535  2016.77850  \n",
+      "1635                7.0  2.571871    193.756600   1421.0000  -882.00000  \n",
+      "1706                8.0  1.169396   1444.677640   2537.5300   241.58000  \n",
+      "1958                8.0  1.610701   2499.076440   2457.9450   166.60000  \n",
+      "2067                8.0  1.248005    932.790040   1802.3600  -503.48000  \n",
+      "2351                8.0  1.305848    204.927360   2227.5000   -66.00000  \n",
+      "2595                7.0  1.739286    561.332500   2173.4025  -124.60250  \n",
+      "2870                8.0  1.169782   4253.784030   2678.7300   394.11000  \n",
+      "3523                7.0  4.972358    127.631000   4387.8700  2079.49000  \n",
+      "3589                7.0  1.770876    284.197200   5127.5475  2820.25250  \n",
+      "3829                7.0  1.648265    125.302680   2202.8600  -105.71000  \n",
+      "3908                7.0  1.647858  41046.021323   2445.8850   162.06000  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $45986.378749999996\n",
+      "Balance Money left : $198.68009999999776\n",
+      "Revenue Earned in year 2012  : $11494.442250000002\n",
+      "Overall Revenue Earned : $22679.5011\n",
+      "Annual Return %: \n",
+      "24.995319402052292\n",
+      "Money available for investment in next year : $57679.501099999994\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2013\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm          mcap\n",
+      "2969   LLEN      1716.0  2882.88000                  8  1.450496    147.439260\n",
+      "2815   NDAQ        93.0  2863.47000                  8  1.258429   4138.493940\n",
+      "1294    BHE       160.0  2868.00000                  8  1.242407    917.191320\n",
+      "997   IMKTA       149.0  2881.66000                  8  1.153188    396.651000\n",
+      "1475   ZOLT       360.0  2881.80000                  8  1.139222    264.189950\n",
+      "4076   HIMX       951.0  2881.53000                  8  1.051509    406.980000\n",
+      "402     GFF       248.0  2873.08000                  8  1.043061    627.146400\n",
+      "2211   CNXN       199.0  2880.53495                  8  0.978510    297.700500\n",
+      "3483    XIN       640.0  2883.20000                  7  3.076085    254.069020\n",
+      "1689    CDG      1016.0  2883.40800                  7  2.236557    324.463002\n",
+      "4014    PZE       503.0  2879.67500                  7  2.140040    959.025000\n",
+      "2780  RJETQ       312.0  2881.32000                  7  1.861793    275.809440\n",
+      "2653  HEDYY      1363.0  2882.74500                  7  1.812178    126.948880\n",
+      "3695   TPCA       180.0  2880.00000                  7  1.690391    352.594200\n",
+      "3453   FANH       489.0  2882.65500                  7  1.420184    327.126650\n",
+      "2037    MWW       524.0  2879.38000                  7  1.409088    624.544980\n",
+      "1487   BBOX       114.0  2860.60200                  7  1.370562    351.860730\n",
+      "2240  EONGY       159.0  2876.31000                  7  1.301371  35419.788000\n",
+      "255     DCO       178.0  2881.01900                  7  1.299752    171.321150\n",
+      "3089   ATCO       150.0  2883.75000                  7  1.205658   1010.563260\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought    Invested  \\\n",
+      "244     DCO 2014-02-12       27.92000       178.0  2881.01900   \n",
+      "387     GFF 2014-02-12       12.38000       248.0  2873.08000   \n",
+      "957   IMKTA 2014-02-12       22.39500       149.0  2881.66000   \n",
+      "1248    BHE 2014-02-12       22.86250       160.0  2868.00000   \n",
+      "1422   ZOLT 2014-02-12       16.73500       360.0  2881.80000   \n",
+      "1433   BBOX 2014-02-12       26.42000       114.0  2860.60200   \n",
+      "1629    CDG 2014-02-12        4.56900      1016.0  2883.40800   \n",
+      "1962    MWW 2014-02-12        7.42000       524.0  2879.38000   \n",
+      "2130   CNXN 2014-02-12       19.25000       199.0  2880.53495   \n",
+      "2159  EONGY 2014-02-12       18.64300       159.0  2876.31000   \n",
+      "2557  HEDYY 2014-02-12        2.24000      1363.0  2882.74500   \n",
+      "2682  RJETQ 2014-02-12        9.17000       312.0  2881.32000   \n",
+      "2715   NDAQ 2014-02-12       38.46375        93.0  2863.47000   \n",
+      "2969   ATCO 2014-02-12       23.09000       150.0  2883.75000   \n",
+      "3312   FANH 2014-02-12        5.97000       489.0  2882.65500   \n",
+      "3342    XIN 2014-02-12        4.69000       640.0  2883.20000   \n",
+      "3542   TPCA 2014-02-12       17.97500       180.0  2880.00000   \n",
+      "3848    PZE 2014-02-12        4.64500       503.0  2879.67500   \n",
+      "3912   HIMX 2014-02-12       14.13500       951.0  2881.53000   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap   sale_value      Revenue  \n",
+      "244                 7.0  1.299752    171.321150   4969.76000   2088.74100  \n",
+      "387                 8.0  1.043061    627.146400   3070.24000    197.16000  \n",
+      "957                 8.0  1.153188    396.651000   3336.85500    455.19500  \n",
+      "1248                8.0  1.242407    917.191320   3658.00000    790.00000  \n",
+      "1422                8.0  1.139222    264.189950   6024.60000   3142.80000  \n",
+      "1433                7.0  1.370562    351.860730   3011.88000    151.27800  \n",
+      "1629                7.0  2.236557    324.463002   4642.10400   1758.69600  \n",
+      "1962                7.0  1.409088    624.544980   3888.08000   1008.70000  \n",
+      "2130                8.0  0.978510    297.700500   3830.75000    950.21505  \n",
+      "2159                7.0  1.301371  35419.788000   2964.23700     87.92700  \n",
+      "2557                7.0  1.812178    126.948880   3053.12000    170.37500  \n",
+      "2682                7.0  1.861793    275.809440   2861.04000    -20.28000  \n",
+      "2715                8.0  1.258429   4138.493940   3577.12875    713.65875  \n",
+      "2969                7.0  1.205658   1010.563260   3463.50000    579.75000  \n",
+      "3312                7.0  1.420184    327.126650   2919.33000     36.67500  \n",
+      "3342                7.0  3.076085    254.069020   3001.60000    118.40000  \n",
+      "3542                7.0  1.690391    352.594200   3235.50000    355.50000  \n",
+      "3848                7.0  2.140040    959.025000   2336.43500   -543.24000  \n",
+      "3912                8.0  1.051509    406.980000  13442.38500  10560.85500  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $57567.01895\n",
+      "Balance Money left : $112.48214999999618\n",
+      "Revenue Earned in year 2013  : $22602.4058\n",
+      "Overall Revenue Earned : $45281.9069\n",
+      "Annual Return %: \n",
+      "39.26276922491225\n",
+      "Money available for investment in next year : $80281.9069\n",
+      "\n",
+      "\n",
+      " Year : 2014\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought  Invested  Piotroski_F_Score       btm          mcap\n",
+      "1808    KEP       234.0  3999.060                  8  2.301192  20697.189480\n",
+      "4081    PZE       864.0  4013.280                  8  1.506404   1120.545000\n",
+      "2979    LPL       334.0  4006.330                  8  1.157445   8687.760340\n",
+      "3180     TX       132.0  4008.114                  8  0.869084   6144.440400\n",
+      "193     GLW       211.0  3996.340                  8  0.848851  24930.180000\n",
+      "575    ORBK       288.0  4001.760                  8  0.827622    564.649280\n",
+      "579      OC        90.0  3984.750                  8  0.790733   4796.816000\n",
+      "3269  ULTRF      1177.0  4013.570                  8  0.772251    525.167060\n",
+      "1279  KNBWY       288.0  4010.976                  8  0.764313  13377.863695\n",
+      "2803    ACH       437.0  4011.660                  7  1.556854   4706.526000\n",
+      "4109  AUOTY      1335.0  4011.675                  7  1.551298   3002.766000\n",
+      "920   WACLY        77.0  3965.115                  7  1.383071   1440.060832\n",
+      "407     SRL       524.0  4013.840                  7  1.371689    499.790480\n",
+      "4063    UMC      2007.0  4014.000                  7  1.350491   5096.768640\n",
+      "2894  TLKGY       363.0  4009.335                  7  1.324143   1633.511456\n",
+      "2665    DLA       260.0  4005.300                  7  1.262739    111.714300\n",
+      "645   RICOY        68.0  4012.272                  7  1.193383   8376.392825\n",
+      "4174   ORIG       238.0  3998.400                  7  1.173816   2538.593750\n",
+      "718   TTDKY        93.0  3977.238                  7  1.171682   5265.441714\n",
+      "4121    CHA        84.0  3969.000                  7  1.120995  40927.514680\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought  Invested  \\\n",
+      "186     GLW 2015-02-12       24.83000       211.0  3996.340   \n",
+      "392     SRL 2015-02-12        4.45500       524.0  4013.840   \n",
+      "556    ORBK 2015-02-12       15.90000       288.0  4001.760   \n",
+      "560      OC 2015-02-12       38.93500        90.0  3984.750   \n",
+      "625   RICOY 2015-02-12        9.50900        68.0  4012.272   \n",
+      "696   TTDKY 2015-02-12       65.30000        93.0  3977.238   \n",
+      "890   WACLY 2015-02-12       51.81100        77.0  3965.115   \n",
+      "1243  KNBWY 2015-02-12       13.70700       288.0  4010.976   \n",
+      "1753    KEP 2015-02-12       20.38000       234.0  3999.060   \n",
+      "2581    DLA 2015-02-12        8.74000       260.0  4005.300   \n",
+      "2714    ACH 2015-02-12       11.48000       437.0  4011.660   \n",
+      "2801  TLKGY 2015-02-12       26.41200       363.0  4009.335   \n",
+      "2883    LPL 2015-02-12       16.36750       334.0  4006.330   \n",
+      "3075     TX 2015-02-12       17.82750       132.0  4008.114   \n",
+      "3161  ULTRF 2015-02-12        1.65000      1177.0  4013.570   \n",
+      "3919    UMC 2015-02-12        2.48500      2007.0  4014.000   \n",
+      "3938    PZE 2015-02-12        5.32500       864.0  4013.280   \n",
+      "3966  AUOTY 2015-02-12        5.56000      1335.0  4011.675   \n",
+      "3978    CHA 2015-02-12       64.40985        84.0  3969.000   \n",
+      "4032   ORIG 2015-02-12        8.89100       238.0  3998.400   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value    Revenue  \n",
+      "186                 8.0  0.848851  24930.180000   5239.1300  1242.7900  \n",
+      "392                 7.0  1.371689    499.790480   2334.4200 -1679.4200  \n",
+      "556                 8.0  0.827622    564.649280   4579.2000   577.4400  \n",
+      "560                 8.0  0.790733   4796.816000   3504.1500  -480.6000  \n",
+      "625                 7.0  1.193383   8376.392825    646.6120 -3365.6600  \n",
+      "696                 7.0  1.171682   5265.441714   6072.9000  2095.6620  \n",
+      "890                 7.0  1.383071   1440.060832   3989.4470    24.3320  \n",
+      "1243                8.0  0.764313  13377.863695   3947.6160   -63.3600  \n",
+      "1753                8.0  2.301192  20697.189480   4768.9200   769.8600  \n",
+      "2581                7.0  1.262739    111.714300   2272.4000 -1732.9000  \n",
+      "2714                7.0  1.556854   4706.526000   5016.7600  1005.1000  \n",
+      "2801                7.0  1.324143   1633.511456   9587.5560  5578.2210  \n",
+      "2883                8.0  1.157445   8687.760340   5466.7450  1460.4150  \n",
+      "3075                8.0  0.869084   6144.440400   2353.2300 -1654.8840  \n",
+      "3161                8.0  0.772251    525.167060   1942.0500 -2071.5200  \n",
+      "3919                7.0  1.350491   5096.768640   4987.3950   973.3950  \n",
+      "3938                8.0  1.506404   1120.545000   4600.8000   587.5200  \n",
+      "3966                7.0  1.551298   3002.766000   7422.6000  3410.9250  \n",
+      "3978                7.0  1.120995  40927.514680   5410.4274  1441.4274  \n",
+      "4032                7.0  1.173816   2538.593750   2116.0580 -1882.3420  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $80022.01499999998\n",
+      "Balance Money left : $259.8919000000169\n",
+      "Revenue Earned in year 2014  : $6236.401400000004\n",
+      "Overall Revenue Earned : $51518.308300000004\n",
+      "Annual Return %: \n",
+      "7.793357115538775\n",
+      "Money available for investment in next year : $86518.3083\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2015\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought   Invested  Piotroski_F_Score       btm         mcap\n",
+      "1331    MEP       314.0  4315.9300                  8  3.019028    618.60960\n",
+      "2853    NOG       503.0  4320.7700                  8  2.234198    345.02855\n",
+      "2363   PSEM       292.0  4323.0600                  8  1.044537    198.64496\n",
+      "4189  AUOTY       778.0  4325.6800                  8  0.999081   4898.74325\n",
+      "671    SHYF       789.0  4323.7200                  8  0.941035    179.33444\n",
+      "68      BHI        69.0  4311.8100                  8  0.765378  24334.38000\n",
+      "2516   CRAI       145.0  4315.2000                  8  0.765155    279.79296\n",
+      "4120    EBR      2390.0  4325.9000                  7  6.937734   2894.63676\n",
+      "4261   ORIG       486.0  4321.0260                  7  2.584467   1225.11776\n",
+      "4266  PACDQ      1188.0  4324.2606                  7  2.575684   1001.23776\n",
+      "3478   JASO       486.0  4320.5400                  7  2.091698    413.01510\n",
+      "1964    KEP       212.0  4320.5600                  7  1.976736  24856.84608\n",
+      "4011    WPX       344.0  4322.3600                  7  1.823108   2369.03100\n",
+      "929   SEMUF        64.0  4284.8000                  7  1.770507   1135.50000\n",
+      "1284  EPEGQ       342.0  4324.5900                  7  1.694366   2566.15200\n",
+      "859    KSPN      1237.0  4323.3150                  7  1.584074    108.41668\n",
+      "4136  ROSYY       527.0  4318.2380                  7  1.392384   3066.92848\n",
+      "331      HL      1289.0  4324.5950                  7  1.362888   1024.98183\n",
+      "1715   SPNX       203.0  4317.8100                  7  1.352955   3015.42735\n",
+      "2176    TRQ      1409.0  4325.6300                  7  1.320531   6238.12690\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought   Invested  \\\n",
+      "68      BHI 2016-02-12       40.09500        69.0  4311.8100   \n",
+      "323      HL 2016-02-12        2.25000      1289.0  4324.5950   \n",
+      "656    SHYF 2016-02-12        2.93000       789.0  4323.7200   \n",
+      "834    KSPN 2016-02-12        3.67000      1237.0  4323.3150   \n",
+      "898   SEMUF 2016-02-12       44.87500        64.0  4284.8000   \n",
+      "1241  EPEGQ 2016-02-12        2.43500       342.0  4324.5900   \n",
+      "1284    MEP 2016-02-12        6.77000       314.0  4315.9300   \n",
+      "1659   SPNX 2016-02-12        8.95250       203.0  4317.8100   \n",
+      "1896    KEP 2016-02-12       21.73500       212.0  4320.5600   \n",
+      "2096    TRQ 2016-02-12        1.96000      1409.0  4325.6300   \n",
+      "2424   CRAI 2016-02-12       16.67500       145.0  4315.2000   \n",
+      "2750    NOG 2016-02-12        2.99050       503.0  4320.7700   \n",
+      "3337   JASO 2016-02-12        8.19500       486.0  4320.5400   \n",
+      "3838    WPX 2016-02-12        4.37500       344.0  4322.3600   \n",
+      "3943    EBR 2016-02-12        1.41500      2390.0  4325.9000   \n",
+      "3958  ROSYY 2016-02-12        6.43700       527.0  4318.2380   \n",
+      "4010  AUOTY 2016-02-12        2.47000       778.0  4325.6800   \n",
+      "4079   ORIG 2016-02-12        0.80475       486.0  4321.0260   \n",
+      "4084  PACDQ 2016-02-12        0.32735      1188.0  4324.2606   \n",
+      "\n",
+      "      Piotroski_F_Score       btm         mcap  sale_value    Revenue  \n",
+      "68                  8.0  0.765378  24334.38000   2766.5550 -1545.2550  \n",
+      "323                 7.0  1.362888   1024.98183   2900.2500 -1424.3450  \n",
+      "656                 8.0  0.941035    179.33444   2311.7700 -2011.9500  \n",
+      "834                 7.0  1.584074    108.41668   4539.7900   216.4750  \n",
+      "898                 7.0  1.770507   1135.50000   2872.0000 -1412.8000  \n",
+      "1241                7.0  1.694366   2566.15200    832.7700 -3491.8200  \n",
+      "1284                8.0  3.019028    618.60960   2125.7800 -2190.1500  \n",
+      "1659                7.0  1.352955   3015.42735   1817.3575 -2500.4525  \n",
+      "1896                7.0  1.976736  24856.84608   4607.8200   287.2600  \n",
+      "2096                7.0  1.320531   6238.12690   2761.6400 -1563.9900  \n",
+      "2424                8.0  0.765155    279.79296   2417.8750 -1897.3250  \n",
+      "2750                8.0  2.234198    345.02855   1504.2215 -2816.5485  \n",
+      "3337                7.0  2.091698    413.01510   3982.7700  -337.7700  \n",
+      "3838                7.0  1.823108   2369.03100   1505.0000 -2817.3600  \n",
+      "3943                7.0  6.937734   2894.63676   3381.8500  -944.0500  \n",
+      "3958                7.0  1.392384   3066.92848   3392.2990  -925.9390  \n",
+      "4010                8.0  0.999081   4898.74325   1921.6600 -2404.0200  \n",
+      "4079                7.0  2.584467   1225.11776    391.1085 -3929.9175  \n",
+      "4084                7.0  2.575684   1001.23776    388.8918 -3935.3688  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $86389.79460000001\n",
+      "Balance Money left : $128.51369999999588\n",
+      "Revenue Earned in year 2015  : $-35645.3263\n",
+      "Overall Revenue Earned : $15872.982000000004\n",
+      "Annual Return %: \n",
+      "-41.26103837269685\n",
+      "Money available for investment in next year : $50872.982\n",
+      "\n",
+      "\n",
+      " Year : 2016\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought   Invested  Piotroski_F_Score        btm          mcap\n",
+      "4089  GFASY      2211.0  2542.6500                  8   3.765535     207.62733\n",
+      "3412   JASO       310.0  2540.4500                  8   1.946967     461.43870\n",
+      "2202  GSHHY       118.0  2538.1800                  8   1.210551    3502.10712\n",
+      "2200   JAKK       386.0  2539.8800                  8   1.098726     139.25224\n",
+      "2776    DLA       177.0  2534.6400                  8   1.051199     137.46111\n",
+      "3029  CNCOY       401.0  2540.3350                  8   0.962406    5827.17144\n",
+      "1323     TM        24.0  2494.9200                  8   0.922500  161482.85616\n",
+      "1338   VRTV        89.0  2528.9350                  8   0.914723     579.52000\n",
+      "11    ASMIY        68.0  2512.4640                  8   0.902303    2344.82800\n",
+      "4124  PACDQ      7770.0  2543.5095                  7  15.173869     177.41388\n",
+      "56      ATW       440.0  2538.8000                  7   3.077902     957.52574\n",
+      "1043  SDLPQ      1342.0  2543.0900                  7   2.877217     335.15030\n",
+      "2023    KEP       117.0  2542.9950                  7   2.096652   27180.75576\n",
+      "2912    TNP       517.0  2543.6400                  7   2.018255     691.72488\n",
+      "3737   TPCA       166.0  2531.5000                  7   1.988970     453.89925\n",
+      "3994  LUKOY        83.0  2524.7770                  7   1.923680   22899.40796\n",
+      "1469    ICD       736.0  2541.0400                  7   1.888483     123.24020\n",
+      "4135    LPG       261.0  2538.2250                  7   1.868169     527.57500\n",
+      "819    KSPN       693.0  2543.3100                  7   1.724556     101.63080\n",
+      "2221    TRQ      1297.0  2542.1200                  7   1.665830    5111.27756\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought   Invested  \\\n",
+      "11    ASMIY 2017-02-13       50.18000        68.0  2512.4640   \n",
+      "54      ATW 2017-02-13       10.85000       440.0  2538.8000   \n",
+      "801    KSPN 2017-02-13        2.77500       693.0  2543.3100   \n",
+      "1010  SDLPQ 2017-02-13        4.53535      1342.0  2543.0900   \n",
+      "1284     TM 2017-02-13      114.19500        24.0  2494.9200   \n",
+      "1299   VRTV 2017-02-13       55.62500        89.0  2528.9350   \n",
+      "1424    ICD 2017-02-13        6.12500       736.0  2541.0400   \n",
+      "1961    KEP 2017-02-13       17.99500       117.0  2542.9950   \n",
+      "2127   JAKK 2017-02-13        5.25000       386.0  2539.8800   \n",
+      "2129  GSHHY 2017-02-13       31.43500       118.0  2538.1800   \n",
+      "2147    TRQ 2017-02-13        3.58250      1297.0  2542.1200   \n",
+      "2678    DLA 2017-02-13       18.19500       177.0  2534.6400   \n",
+      "2807    TNP 2017-02-13        4.82500       517.0  2543.6400   \n",
+      "2919  CNCOY 2017-02-13        9.14000       401.0  2540.3350   \n",
+      "3273   JASO 2017-02-13        4.83000       310.0  2540.4500   \n",
+      "3585   TPCA 2017-02-13       31.00000       166.0  2531.5000   \n",
+      "3828  LUKOY 2017-02-13       56.44900        83.0  2524.7770   \n",
+      "3920  GFASY 2017-02-13        1.65250      2211.0  2542.6500   \n",
+      "3954  PACDQ 2017-02-13        3.24650      7770.0  2543.5095   \n",
+      "3965    LPG 2017-02-13        9.74500       261.0  2538.2250   \n",
+      "\n",
+      "      Piotroski_F_Score        btm          mcap  sale_value     Revenue  \n",
+      "11                  8.0   0.902303    2344.82800   3412.2400    899.7760  \n",
+      "54                  7.0   3.077902     957.52574   4774.0000   2235.2000  \n",
+      "801                 7.0   1.724556     101.63080   1923.0750   -620.2350  \n",
+      "1010                7.0   2.877217     335.15030   6086.4397   3543.3497  \n",
+      "1284                8.0   0.922500  161482.85616   2740.6800    245.7600  \n",
+      "1299                8.0   0.914723     579.52000   4950.6250   2421.6900  \n",
+      "1424                7.0   1.888483     123.24020   4508.0000   1966.9600  \n",
+      "1961                7.0   2.096652   27180.75576   2105.4150   -437.5800  \n",
+      "2127                8.0   1.098726     139.25224   2026.5000   -513.3800  \n",
+      "2129                8.0   1.210551    3502.10712   3709.3300   1171.1500  \n",
+      "2147                7.0   1.665830    5111.27756   4646.5025   2104.3825  \n",
+      "2678                8.0   1.051199     137.46111   3220.5150    685.8750  \n",
+      "2807                7.0   2.018255     691.72488   2494.5250    -49.1150  \n",
+      "2919                8.0   0.962406    5827.17144   3665.1400   1124.8050  \n",
+      "3273                8.0   1.946967     461.43870   1497.3000  -1043.1500  \n",
+      "3585                7.0   1.988970     453.89925   5146.0000   2614.5000  \n",
+      "3828                7.0   1.923680   22899.40796   4685.2670   2160.4900  \n",
+      "3920                8.0   3.765535     207.62733   3653.6775   1111.0275  \n",
+      "3954                7.0  15.173869     177.41388  25225.3050  22681.7955  \n",
+      "3965                7.0   1.868169     527.57500   2543.4450      5.2200  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $50705.4605\n",
+      "Balance Money left : $167.52150000000256\n",
+      "Revenue Earned in year 2016  : $42308.5212\n",
+      "Overall Revenue Earned : $58181.50320000001\n",
+      "Annual Return %: \n",
+      "83.43977311871569\n",
+      "Money available for investment in next year : $93181.5032\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2017\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm          mcap\n",
+      "3464    VRS       590.0  4652.15000                  8  3.153462    244.176100\n",
+      "3766   REGI       525.0  4652.81250                  8  1.624068    373.964100\n",
+      "3617   TPCA       150.0  4650.00000                  8  1.208424    747.672250\n",
+      "666    TRCO       147.0  4647.40500                  8  1.172312   3019.473600\n",
+      "2869    ACH       345.0  4650.60000                  8  0.901742   6086.711920\n",
+      "454    MCEM        98.0  4613.35000                  8  0.831490    181.467000\n",
+      "1115   YUME      1299.0  4656.91500                  8  0.800155    121.530260\n",
+      "998   SDLPQ      1027.0  4657.80445                  7  3.092422    385.652400\n",
+      "2078    CYD       330.0  4646.40000                  7  1.968400    562.232720\n",
+      "1097   NWSA       351.0  4657.77000                  7  1.756280   6584.373350\n",
+      "451   MITSY        15.0  4482.49500                  7  1.312284  25527.624057\n",
+      "2058   SSYS       216.0  4648.32000                  7  1.304621    870.649060\n",
+      "3253    ALO     11946.0  4658.94000                  7  1.287508    111.134062\n",
+      "2199    IAG       978.0  4657.72500                  7  1.271628   1747.130000\n",
+      "3970    FRO       649.0  4653.33000                  7  1.242068   1207.341990\n",
+      "1119   CWEN       265.0  4644.12500                  7  1.236959   1495.603200\n",
+      "810   WACLY        73.0  4614.18400                  7  1.207261   1691.943279\n",
+      "322     HMC       145.0  4652.32500                  7  1.200681  54536.992800\n",
+      "2795    SNP        58.0  4642.90000                  7  1.190960  85984.766240\n",
+      "1210  NSANY       235.0  4645.95000                  7  1.158086  37685.221460\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought    Invested  \\\n",
+      "313     HMC 2018-02-12       35.05690       145.0  4652.32500   \n",
+      "440   MITSY 2018-02-12      352.29600        15.0  4482.49500   \n",
+      "442    MCEM 2018-02-12       69.74000        98.0  4613.35000   \n",
+      "652    TRCO 2018-02-12       42.23005       147.0  4647.40500   \n",
+      "793   WACLY 2018-02-12      144.18000        73.0  4614.18400   \n",
+      "967   SDLPQ 2018-02-12        3.21000      1027.0  4657.80445   \n",
+      "1064   NWSA 2018-02-12       15.81500       351.0  4657.77000   \n",
+      "1083   CWEN 2018-02-12       16.55000       265.0  4644.12500   \n",
+      "1163  NSANY 2018-02-12       20.77500       235.0  4645.95000   \n",
+      "1964   SSYS 2018-02-12       19.69500       216.0  4648.32000   \n",
+      "1983    CYD 2018-02-12       23.90500       330.0  4646.40000   \n",
+      "2102    IAG 2018-02-12        5.43000       978.0  4657.72500   \n",
+      "2669    SNP 2018-02-12       78.28985        58.0  4642.90000   \n",
+      "2741    ACH 2018-02-12       14.80500       345.0  4650.60000   \n",
+      "3113    ALO 2018-02-12        2.94000     11946.0  4658.94000   \n",
+      "3317    VRS 2018-02-12       15.24500       590.0  4652.15000   \n",
+      "3463   TPCA 2018-02-12       57.10000       150.0  4650.00000   \n",
+      "3608   REGI 2018-02-12       10.95000       525.0  4652.81250   \n",
+      "3800    FRO 2018-02-12        4.06000       649.0  4653.33000   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap   sale_value      Revenue  \n",
+      "313                 7.0  1.200681  54536.992800   5083.25050    430.92550  \n",
+      "440                 7.0  1.312284  25527.624057   5284.44000    801.94500  \n",
+      "442                 8.0  0.831490    181.467000   6834.52000   2221.17000  \n",
+      "652                 8.0  1.172312   3019.473600   6207.81735   1560.41235  \n",
+      "793                 7.0  1.207261   1691.943279  10525.14000   5910.95600  \n",
+      "967                 7.0  3.092422    385.652400   3296.67000  -1361.13445  \n",
+      "1064                7.0  1.756280   6584.373350   5551.06500    893.29500  \n",
+      "1083                7.0  1.236959   1495.603200   4385.75000   -258.37500  \n",
+      "1163                7.0  1.158086  37685.221460   4882.12500    236.17500  \n",
+      "1964                7.0  1.304621    870.649060   4254.12000   -394.20000  \n",
+      "1983                7.0  1.968400    562.232720   7888.65000   3242.25000  \n",
+      "2102                7.0  1.271628   1747.130000   5310.54000    652.81500  \n",
+      "2669                7.0  1.190960  85984.766240   4540.81130   -102.08870  \n",
+      "2741                8.0  0.901742   6086.711920   5107.72500    457.12500  \n",
+      "3113                7.0  1.287508    111.134062  35121.24000  30462.30000  \n",
+      "3317                8.0  3.153462    244.176100   8994.55000   4342.40000  \n",
+      "3463                8.0  1.208424    747.672250   8565.00000   3915.00000  \n",
+      "3608                8.0  1.624068    373.964100   5748.75000   1095.93750  \n",
+      "3800                7.0  1.242068   1207.341990   2634.94000  -2018.39000  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $92785.50094999997\n",
+      "Balance Money left : $396.0022500000341\n",
+      "Revenue Earned in year 2017  : $52088.51819999999\n",
+      "Overall Revenue Earned : $110270.0214\n",
+      "Annual Return %: \n",
+      "56.138639837779536\n",
+      "Money available for investment in next year : $145270.0214\n",
+      "\n",
+      "\n",
+      " Year : 2018\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought   Invested  Piotroski_F_Score       btm          mcap\n",
+      "3730   AMPY       678.0  7254.6000                  8  1.552445    253.750000\n",
+      "3827    CHA       161.0  7227.2900                  8  1.303661  38418.610280\n",
+      "2546  YZCAY       516.0  7257.0240                  8  1.268805   5743.133784\n",
+      "2181      E       218.0  7243.0500                  8  0.966211  59760.918300\n",
+      "2107   NEXA       389.0  7260.6850                  8  0.951205   2614.405200\n",
+      "1879    YPF       333.0  7244.4150                  8  0.911458   8949.310390\n",
+      "2806    CEO        51.0  7188.7050                  8  0.911151  64095.951000\n",
+      "814   SEMUF       112.0  7210.0000                  7  2.036369    956.336400\n",
+      "3765  ROSYY      1072.0  7260.6560                  7  1.830437   2335.355640\n",
+      "3810   AENZ      2491.0  7261.2650                  7  1.749881    376.231350\n",
+      "3815  AUOTY      1589.0  7261.7300                  7  1.649536   4003.688000\n",
+      "2504    PKX        86.0  7193.0400                  7  1.636015  25001.443740\n",
+      "3816  GZTGF       762.0  7258.0500                  7  1.405742   2037.112740\n",
+      "387     RRC       559.0  7255.8200                  7  1.364083   4233.080740\n",
+      "1085     AR       417.0  7249.5450                  7  1.355666   6011.201000\n",
+      "1151  NSANY       349.0  7250.4750                  7  1.259946  40243.428774\n",
+      "2777    SNP        92.0  7202.6662                  7  1.256362  88829.939440\n",
+      "2621    CNX       563.0  7259.8850                  7  1.191405   3273.360090\n",
+      "2383     MT       218.0  7233.2400                  7  1.177082  32953.518270\n",
+      "2739    CHU       563.0  7258.4775                  7  1.128808  41399.094000\n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought   Invested  \\\n",
+      "374     RRC 2019-02-12       10.58250       559.0  7255.8200   \n",
+      "791   SEMUF 2019-02-12       50.00000       112.0  7210.0000   \n",
+      "1049     AR 2019-02-12        9.19370       417.0  7249.5450   \n",
+      "1111  NSANY 2019-02-12       16.85500       349.0  7250.4750   \n",
+      "1797    YPF 2019-02-12       15.80000       333.0  7244.4150   \n",
+      "2018   NEXA 2019-02-12        9.39000       389.0  7260.6850   \n",
+      "2091      E 2019-02-12       33.53000       218.0  7243.0500   \n",
+      "2283     MT 2019-02-12       21.87965       218.0  7233.2400   \n",
+      "2399    PKX 2019-02-12       59.21500        86.0  7193.0400   \n",
+      "2438  YZCAY 2019-02-12        9.14800       516.0  7257.0240   \n",
+      "2511    CNX 2019-02-12       10.00000       563.0  7259.8850   \n",
+      "2624    CHU 2019-02-12       11.49500       563.0  7258.4775   \n",
+      "2662    SNP 2019-02-12       83.71500        92.0  7202.6662   \n",
+      "2689    CEO 2019-02-12      167.03000        51.0  7188.7050   \n",
+      "3556   AMPY 2019-02-12        8.44500       678.0  7254.6000   \n",
+      "3591  ROSYY 2019-02-12        6.71100      1072.0  7260.6560   \n",
+      "3633   AENZ 2019-02-12        2.85005      2491.0  7261.2650   \n",
+      "3638  AUOTY 2019-02-12        3.45000      1589.0  7261.7300   \n",
+      "3639  GZTGF 2019-02-12        7.79000       762.0  7258.0500   \n",
+      "3651    CHA 2019-02-12       54.52000       161.0  7227.2900   \n",
+      "\n",
+      "      Piotroski_F_Score       btm          mcap  sale_value     Revenue  \n",
+      "374                 7.0  1.364083   4233.080740  5915.61750 -1340.20250  \n",
+      "791                 7.0  2.036369    956.336400  5600.00000 -1610.00000  \n",
+      "1049                7.0  1.355666   6011.201000  3833.77290 -3415.77210  \n",
+      "1111                7.0  1.259946  40243.428774  5882.39500 -1368.08000  \n",
+      "1797                8.0  0.911458   8949.310390  5261.40000 -1983.01500  \n",
+      "2018                8.0  0.951205   2614.405200  3652.71000 -3607.97500  \n",
+      "2091                8.0  0.966211  59760.918300  7309.54000    66.49000  \n",
+      "2283                7.0  1.177082  32953.518270  4769.76370 -2463.47630  \n",
+      "2399                7.0  1.636015  25001.443740  5092.49000 -2100.55000  \n",
+      "2438                8.0  1.268805   5743.133784  4720.36800 -2536.65600  \n",
+      "2511                7.0  1.191405   3273.360090  5630.00000 -1629.88500  \n",
+      "2624                7.0  1.128808  41399.094000  6471.68500  -786.79250  \n",
+      "2662                7.0  1.256362  88829.939440  7701.78000   499.11380  \n",
+      "2689                8.0  0.911151  64095.951000  8518.53000  1329.82500  \n",
+      "3556                8.0  1.552445    253.750000  5725.71000 -1528.89000  \n",
+      "3591                7.0  1.830437   2335.355640  7194.19200   -66.46400  \n",
+      "3633                7.0  1.749881    376.231350  7099.47455  -161.79045  \n",
+      "3638                7.0  1.649536   4003.688000  5482.05000 -1779.68000  \n",
+      "3639                7.0  1.405742   2037.112740  5935.98000 -1322.07000  \n",
+      "3651                8.0  1.303661  38418.610280  8777.72000  1550.43000  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $144830.61870000002\n",
+      "Balance Money left : $439.4026999999769\n",
+      "Revenue Earned in year 2018  : $-24255.440049999997\n",
+      "Overall Revenue Earned : $86014.58135\n",
+      "Annual Return %: \n",
+      "-16.747453175106816\n",
+      "Money available for investment in next year : $121014.58135\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "\n",
+      "\n",
+      " Year : 2019\n",
+      "\n",
+      "Stocks Bought\n",
+      "       Name  Qty_Bought    Invested  Piotroski_F_Score       btm  \\\n",
+      "3707  OGZPY      1213.0  6050.44400                  8  3.912199   \n",
+      "3675   AMPY       716.0  6046.62000                  8  2.158517   \n",
+      "2595  YZCAY       661.0  6046.82800                  8  1.909660   \n",
+      "833     TGA      3209.0  6048.96500                  8  1.631480   \n",
+      "2780    CHU       526.0  6046.37000                  8  1.399329   \n",
+      "3039   DRYS      1176.0  6046.58040                  8  1.293933   \n",
+      "3070    GTE      2707.0  6050.14500                  8  1.225949   \n",
+      "1707     AA       213.0  6032.16000                  8  1.097291   \n",
+      "380     MRO       388.0  6046.01000                  8  1.032657   \n",
+      "354   KYOCY       112.0  6048.89600                  8  0.962586   \n",
+      "1658    GSM      2521.0  6050.40000                  7  2.827756   \n",
+      "1361   ESTE      1012.0  6046.70000                  7  2.579720   \n",
+      "2622   CMLS       403.0  6042.98500                  7  2.180193   \n",
+      "2440     MT       276.0  6038.78340                  7  2.008835   \n",
+      "2411    ELP       657.0  6044.40000                  7  1.932806   \n",
+      "3050    DSX      1930.0  6050.55000                  7  1.902170   \n",
+      "507   SENEA       205.0  6026.94875                  7  1.775353   \n",
+      "887     CPE       805.0  6045.55000                  7  1.655498   \n",
+      "2764    PTR        96.0  6023.04000                  7  1.567257   \n",
+      "3208   HRST       344.0  6037.20000                  7  1.514989   \n",
+      "\n",
+      "               mcap  \n",
+      "3707   48955.987500  \n",
+      "3675     192.983400  \n",
+      "2595    3964.982544  \n",
+      "833      135.025220  \n",
+      "2780   32617.468000  \n",
+      "3039     492.860800  \n",
+      "3070     839.961430  \n",
+      "1707    4911.186600  \n",
+      "380    11744.460000  \n",
+      "354    21244.003650  \n",
+      "1658     271.673760  \n",
+      "1361     129.705920  \n",
+      "2622     178.804800  \n",
+      "2440   20950.450560  \n",
+      "2411    2142.718650  \n",
+      "3050     329.969520  \n",
+      "507      234.757800  \n",
+      "887     1477.013670  \n",
+      "2764  112649.425500  \n",
+      "3208     180.555160  \n",
+      "\n",
+      "Stocks Sold\n",
+      "       Name       Date  Average_Price  Qty_Bought    Invested  \\\n",
+      "346   KYOCY 2020-02-12       67.22700       112.0  6048.89600   \n",
+      "372     MRO 2020-02-12       11.71500       388.0  6046.01000   \n",
+      "498   SENEA 2020-02-12       39.50750       205.0  6026.94875   \n",
+      "808     TGA 2020-02-12        1.25500      3209.0  6048.96500   \n",
+      "860     CPE 2020-02-12        2.97000       805.0  6045.55000   \n",
+      "1312   ESTE 2020-02-12        4.56000      1012.0  6046.70000   \n",
+      "1602    GSM 2020-02-12        1.05530      2521.0  6050.40000   \n",
+      "1650     AA 2020-02-12       15.90750       213.0  6032.16000   \n",
+      "2319    ELP 2020-02-12       17.49000       657.0  6044.40000   \n",
+      "2347     MT 2020-02-12       17.92250       276.0  6038.78340   \n",
+      "2504  YZCAY 2020-02-12        8.14600       661.0  6046.82800   \n",
+      "2530   CMLS 2020-02-12       14.55500       403.0  6042.98500   \n",
+      "2671    PTR 2020-02-12       45.42500        96.0  6023.04000   \n",
+      "2687    CHU 2020-02-12        8.74500       526.0  6046.37000   \n",
+      "2948    DSX 2020-02-12        2.81000      1930.0  6050.55000   \n",
+      "2967    GTE 2020-02-12        0.97305      2707.0  6050.14500   \n",
+      "3095   HRST 2020-02-12        5.12500       344.0  6037.20000   \n",
+      "3531   AMPY 2020-02-12        5.58000       716.0  6046.62000   \n",
+      "3562  OGZPY 2020-02-12        7.53800      1213.0  6050.44400   \n",
+      "\n",
+      "      Piotroski_F_Score       btm           mcap   sale_value     Revenue  \n",
+      "346                 8.0  0.962586   21244.003650   7529.42400  1480.52800  \n",
+      "372                 8.0  1.032657   11744.460000   4545.42000 -1500.59000  \n",
+      "498                 7.0  1.775353     234.757800   8099.03750  2072.08875  \n",
+      "808                 8.0  1.631480     135.025220   4027.29500 -2021.67000  \n",
+      "860                 7.0  1.655498    1477.013670   2390.85000 -3654.70000  \n",
+      "1312                7.0  2.579720     129.705920   4614.72000 -1431.98000  \n",
+      "1602                7.0  2.827756     271.673760   2660.41130 -3389.98870  \n",
+      "1650                8.0  1.097291    4911.186600   3388.29750 -2643.86250  \n",
+      "2319                7.0  1.932806    2142.718650  11490.93000  5446.53000  \n",
+      "2347                7.0  2.008835   20950.450560   4946.61000 -1092.17340  \n",
+      "2504                8.0  1.909660    3964.982544   5384.50600  -662.32200  \n",
+      "2530                7.0  2.180193     178.804800   5865.66500  -177.32000  \n",
+      "2671                7.0  1.567257  112649.425500   4360.80000 -1662.24000  \n",
+      "2687                8.0  1.399329   32617.468000   4599.87000 -1446.50000  \n",
+      "2948                7.0  1.902170     329.969520   5423.30000  -627.25000  \n",
+      "2967                8.0  1.225949     839.961430   2634.04635 -3416.09865  \n",
+      "3095                7.0  1.514989     180.555160   1763.00000 -4274.20000  \n",
+      "3531                8.0  2.158517     192.983400   3995.28000 -2051.34000  \n",
+      "3562                8.0  3.912199   48955.987500   9143.59400  3093.15000  \n",
+      "\n",
+      "\n",
+      "Money Invested into business : $120869.57554999998\n",
+      "Balance Money left : $145.00580000001355\n",
+      "Revenue Earned in year 2019  : $-17959.9385\n",
+      "Overall Revenue Earned : $68054.64284999999\n",
+      "Annual Return %: \n",
+      "-14.858940654234807\n",
+      "Money available for investment in next year : $103054.64284999999\n",
+      "\n",
+      "-------------------------------------------------------------------------\n",
+      "\n",
+      "Revenue yearned after 15 years of invesing: 103054.64284999999\n",
+      "\n",
+      "\n",
+      "Annualized Percentage Return on Investment by Buying recommended stocks: 14.84%\n",
+      "\n",
+      "\n",
+      "Overall Percentage Return on Investment by Buying recommended stocks: 194.44%\n"
+     ]
+    }
+   ],
+   "source": [
+    "final_revenue,annualized_return,annual_revenue = piotroski_return (total_investment,number_of_stocks,entry_date, number_of_years, Piotroski_score_limit, btm_percentile,mcap_min)\n",
+    "annualized_return = round(annualized_return,2)\n",
+    "print('\\n-------------------------------------------------------------------------\\n')\n",
+    "print('Revenue yearned after '+ str(number_of_years)+ ' years of invesing: '+ str(final_revenue))\n",
+    "overall_return = round (((final_revenue - total_investment) / total_investment)*100,2)\n",
+    "print('\\n')\n",
+    "print ('Annualized Percentage Return on Investment by Buying recommended stocks: '+ str(annualized_return) + '%')\n",
+    "print('\\n')\n",
+    "print ('Overall Percentage Return on Investment by Buying recommended stocks: '+ str(overall_return) + '%')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 62,
+   "id": "cd414de8",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>year</th>\n",
+       "      <th>piotroski_return</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>2006</td>\n",
+       "      <td>22.01</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2007</td>\n",
+       "      <td>24.45</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   year  piotroski_return\n",
+       "0  2006             22.01\n",
+       "1  2007             24.45"
+      ]
+     },
+     "execution_count": 62,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "annual_revenue['year'] = pd.DatetimeIndex(annual_revenue['date']).year\n",
+    "annual_revenue = annual_revenue[['year','piotroski_return']]\n",
+    "annual_revenue['piotroski_return'] = round(annual_revenue['piotroski_return'],2)\n",
+    "annual_revenue.head(2)"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "id": "39b726c3",
+   "metadata": {},
+   "source": [
+    "## Comparison of Annual Returns of Piotroski Score with S&P 500"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 63,
+   "id": "207761bc",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Year</th>\n",
+       "      <th>S&amp;P_500_return</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>1970</td>\n",
+       "      <td>4.01</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>1971</td>\n",
+       "      <td>14.31</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>1972</td>\n",
+       "      <td>18.98</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "   Year  S&P_500_return\n",
+       "0  1970            4.01\n",
+       "1  1971           14.31\n",
+       "2  1972           18.98"
+      ]
+     },
+     "execution_count": 63,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Getting historical returns of S&P 500 using Wikipedia records and cleaning it\n",
+    "\n",
+    "# Scraping yearly S&P return from Wikipedia\n",
+    "table = pd.read_html('https://en.wikipedia.org/wiki/S%26P_500')\n",
+    "returns = pd.DataFrame(table[1])\n",
+    "returns = returns[['Year','Total Annual Return Including Dividends']]\n",
+    "returns = returns.rename(columns = {'Total Annual Return Including Dividends':'S&P_500_return'})\n",
+    "\n",
+    "# Converting the returns to a float post cleaning the column\n",
+    "returns['S&P_500_return'] = returns['S&P_500_return'].map(lambda x: x.lstrip('%').rstrip('%'))\n",
+    "\n",
+    "# Converting negative integer strings to integer\n",
+    "returns['is_negative'] = returns['S&P_500_return'].str.contains('−')\n",
+    "returns['S&P_500_return'] = returns['S&P_500_return'].map(lambda x: x.lstrip('−'))\n",
+    "returns.drop(returns.index[returns[\"Year\"].apply(lambda x: not (x.strip().isnumeric()))], axis=0, inplace=True)\n",
+    "returns['S&P_500_return'] = pd.to_numeric(returns['S&P_500_return'])\n",
+    "returns['Year'] = pd.to_numeric(returns['Year'])\n",
+    "returns['S&P_500_return'] = np.where(returns['is_negative']==True,returns['S&P_500_return']*(-1),returns['S&P_500_return'])\n",
+    "returns = returns[['Year','S&P_500_return']]\n",
+    "returns.head(3)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 64,
+   "id": "dd3334d9",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Year</th>\n",
+       "      <th>S&amp;P_500_return</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>36</th>\n",
+       "      <td>2006</td>\n",
+       "      <td>15.79</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>37</th>\n",
+       "      <td>2007</td>\n",
+       "      <td>5.49</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>38</th>\n",
+       "      <td>2008</td>\n",
+       "      <td>-37.00</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>39</th>\n",
+       "      <td>2009</td>\n",
+       "      <td>26.46</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>40</th>\n",
+       "      <td>2010</td>\n",
+       "      <td>15.06</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>41</th>\n",
+       "      <td>2011</td>\n",
+       "      <td>2.11</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>42</th>\n",
+       "      <td>2012</td>\n",
+       "      <td>16.00</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>43</th>\n",
+       "      <td>2013</td>\n",
+       "      <td>32.39</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>44</th>\n",
+       "      <td>2014</td>\n",
+       "      <td>13.69</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45</th>\n",
+       "      <td>2015</td>\n",
+       "      <td>1.38</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>46</th>\n",
+       "      <td>2016</td>\n",
+       "      <td>11.96</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>47</th>\n",
+       "      <td>2017</td>\n",
+       "      <td>21.83</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>48</th>\n",
+       "      <td>2018</td>\n",
+       "      <td>-4.38</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>49</th>\n",
+       "      <td>2019</td>\n",
+       "      <td>31.49</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50</th>\n",
+       "      <td>2020</td>\n",
+       "      <td>18.40</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "    Year  S&P_500_return\n",
+       "36  2006           15.79\n",
+       "37  2007            5.49\n",
+       "38  2008          -37.00\n",
+       "39  2009           26.46\n",
+       "40  2010           15.06\n",
+       "41  2011            2.11\n",
+       "42  2012           16.00\n",
+       "43  2013           32.39\n",
+       "44  2014           13.69\n",
+       "45  2015            1.38\n",
+       "46  2016           11.96\n",
+       "47  2017           21.83\n",
+       "48  2018           -4.38\n",
+       "49  2019           31.49\n",
+       "50  2020           18.40"
+      ]
+     },
+     "execution_count": 64,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "# Filtering for years included by the investor for comparison\n",
+    "returns = returns[returns['Year'].isin(annual_revenue['year'].tolist())]\n",
+    "returns"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 65,
+   "id": "c125a04d",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "11.378000000000002\n",
+      "14.838\n"
+     ]
+    }
+   ],
+   "source": [
+    "# Merging returns to get \n",
+    "returns = pd.merge(returns,annual_revenue, how = 'left', left_on ='Year', right_on = 'year')\n",
+    "returns = returns[['Year','S&P_500_return','piotroski_return']]\n",
+    "returns.Year = pd.to_datetime(returns.Year, format='%Y')\n",
+    "print(returns['S&P_500_return'].mean())\n",
+    "print(returns['piotroski_return'].mean())"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 66,
+   "id": "24111a0f",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>Year</th>\n",
+       "      <th>Algorithm / Index</th>\n",
+       "      <th>Return %</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>2006-01-01</td>\n",
+       "      <td>Piotroski Return</td>\n",
+       "      <td>22.01</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>2007-01-01</td>\n",
+       "      <td>Piotroski Return</td>\n",
+       "      <td>24.45</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "        Year Algorithm / Index  Return %\n",
+       "0 2006-01-01  Piotroski Return     22.01\n",
+       "1 2007-01-01  Piotroski Return     24.45"
+      ]
+     },
+     "execution_count": 66,
+     "metadata": {},
+     "output_type": "execute_result"
+    }
+   ],
+   "source": [
+    "#Plotting  Using Plotly to get annual comparison\n",
+    "returns = returns.rename(columns = {'piotroski_return':'Piotroski Return','S&P_500_return':'S&P 500 Return'})\n",
+    "returns_melted =  pd.melt(returns, id_vars =['Year'], value_vars =['Piotroski Return','S&P 500 Return'])\n",
+    "returns_melted = returns_melted.rename(columns = {'variable':'Algorithm / Index','value':'Return %'})\n",
+    "returns_melted.head(2)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 67,
+   "id": "4ecbd4e4",
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "application/vnd.plotly.v1+json": {
+       "config": {
+        "plotlyServerURL": "https://plot.ly"
+       },
+       "data": [
+        {
+         "hovertemplate": "Trading Algorithm / Index=Piotroski Return<br>Year=%{x}<br>Return obtained in Percentage points (%)=%{y}<extra></extra>",
+         "legendgroup": "Piotroski Return",
+         "line": {
+          "color": "#636efa",
+          "dash": "solid"
+         },
+         "mode": "markers+lines",
+         "name": "Piotroski Return",
+         "orientation": "v",
+         "showlegend": true,
+         "type": "scatter",
+         "x": [
+          "2006-01-01T00:00:00",
+          "2007-01-01T00:00:00",
+          "2008-01-01T00:00:00",
+          "2009-01-01T00:00:00",
+          "2010-01-01T00:00:00",
+          "2011-01-01T00:00:00",
+          "2012-01-01T00:00:00",
+          "2013-01-01T00:00:00",
+          "2014-01-01T00:00:00",
+          "2015-01-01T00:00:00",
+          "2016-01-01T00:00:00",
+          "2017-01-01T00:00:00",
+          "2018-01-01T00:00:00",
+          "2019-01-01T00:00:00",
+          "2020-01-01T00:00:00"
+         ],
+         "xaxis": "x",
+         "y": [
+          22.01,
+          24.45,
+          -13.44,
+          -43.72,
+          79.64,
+          41.26,
+          -26.39,
+          25,
+          39.26,
+          7.79,
+          -41.26,
+          83.44,
+          56.14,
+          -16.75,
+          -14.86
+         ],
+         "yaxis": "y"
+        },
+        {
+         "hovertemplate": "Trading Algorithm / Index=S&P 500 Return<br>Year=%{x}<br>Return obtained in Percentage points (%)=%{y}<extra></extra>",
+         "legendgroup": "S&P 500 Return",
+         "line": {
+          "color": "#EF553B",
+          "dash": "solid"
+         },
+         "mode": "markers+lines",
+         "name": "S&P 500 Return",
+         "orientation": "v",
+         "showlegend": true,
+         "type": "scatter",
+         "x": [
+          "2006-01-01T00:00:00",
+          "2007-01-01T00:00:00",
+          "2008-01-01T00:00:00",
+          "2009-01-01T00:00:00",
+          "2010-01-01T00:00:00",
+          "2011-01-01T00:00:00",
+          "2012-01-01T00:00:00",
+          "2013-01-01T00:00:00",
+          "2014-01-01T00:00:00",
+          "2015-01-01T00:00:00",
+          "2016-01-01T00:00:00",
+          "2017-01-01T00:00:00",
+          "2018-01-01T00:00:00",
+          "2019-01-01T00:00:00",
+          "2020-01-01T00:00:00"
+         ],
+         "xaxis": "x",
+         "y": [
+          15.79,
+          5.49,
+          -37,
+          26.46,
+          15.06,
+          2.11,
+          16,
+          32.39,
+          13.69,
+          1.38,
+          11.96,
+          21.83,
+          -4.38,
+          31.49,
+          18.4
+         ],
+         "yaxis": "y"
+        }
+       ],
+       "layout": {
+        "legend": {
+         "title": {
+          "text": "Trading Algorithm / Index"
+         },
+         "tracegroupgap": 0
+        },
+        "template": {
+         "data": {
+          "bar": [
+           {
+            "error_x": {
+             "color": "#2a3f5f"
+            },
+            "error_y": {
+             "color": "#2a3f5f"
+            },
+            "marker": {
+             "line": {
+              "color": "#E5ECF6",
+              "width": 0.5
+             }
+            },
+            "type": "bar"
+           }
+          ],
+          "barpolar": [
+           {
+            "marker": {
+             "line": {
+              "color": "#E5ECF6",
+              "width": 0.5
+             }
+            },
+            "type": "barpolar"
+           }
+          ],
+          "carpet": [
+           {
+            "aaxis": {
+             "endlinecolor": "#2a3f5f",
+             "gridcolor": "white",
+             "linecolor": "white",
+             "minorgridcolor": "white",
+             "startlinecolor": "#2a3f5f"
+            },
+            "baxis": {
+             "endlinecolor": "#2a3f5f",
+             "gridcolor": "white",
+             "linecolor": "white",
+             "minorgridcolor": "white",
+             "startlinecolor": "#2a3f5f"
+            },
+            "type": "carpet"
+           }
+          ],
+          "choropleth": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "type": "choropleth"
+           }
+          ],
+          "contour": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "contour"
+           }
+          ],
+          "contourcarpet": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "type": "contourcarpet"
+           }
+          ],
+          "heatmap": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "heatmap"
+           }
+          ],
+          "heatmapgl": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "heatmapgl"
+           }
+          ],
+          "histogram": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "histogram"
+           }
+          ],
+          "histogram2d": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "histogram2d"
+           }
+          ],
+          "histogram2dcontour": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "histogram2dcontour"
+           }
+          ],
+          "mesh3d": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "type": "mesh3d"
+           }
+          ],
+          "parcoords": [
+           {
+            "line": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "parcoords"
+           }
+          ],
+          "pie": [
+           {
+            "automargin": true,
+            "type": "pie"
+           }
+          ],
+          "scatter": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scatter"
+           }
+          ],
+          "scatter3d": [
+           {
+            "line": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scatter3d"
+           }
+          ],
+          "scattercarpet": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scattercarpet"
+           }
+          ],
+          "scattergeo": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scattergeo"
+           }
+          ],
+          "scattergl": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scattergl"
+           }
+          ],
+          "scattermapbox": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scattermapbox"
+           }
+          ],
+          "scatterpolar": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scatterpolar"
+           }
+          ],
+          "scatterpolargl": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scatterpolargl"
+           }
+          ],
+          "scatterternary": [
+           {
+            "marker": {
+             "colorbar": {
+              "outlinewidth": 0,
+              "ticks": ""
+             }
+            },
+            "type": "scatterternary"
+           }
+          ],
+          "surface": [
+           {
+            "colorbar": {
+             "outlinewidth": 0,
+             "ticks": ""
+            },
+            "colorscale": [
+             [
+              0,
+              "#0d0887"
+             ],
+             [
+              0.1111111111111111,
+              "#46039f"
+             ],
+             [
+              0.2222222222222222,
+              "#7201a8"
+             ],
+             [
+              0.3333333333333333,
+              "#9c179e"
+             ],
+             [
+              0.4444444444444444,
+              "#bd3786"
+             ],
+             [
+              0.5555555555555556,
+              "#d8576b"
+             ],
+             [
+              0.6666666666666666,
+              "#ed7953"
+             ],
+             [
+              0.7777777777777778,
+              "#fb9f3a"
+             ],
+             [
+              0.8888888888888888,
+              "#fdca26"
+             ],
+             [
+              1,
+              "#f0f921"
+             ]
+            ],
+            "type": "surface"
+           }
+          ],
+          "table": [
+           {
+            "cells": {
+             "fill": {
+              "color": "#EBF0F8"
+             },
+             "line": {
+              "color": "white"
+             }
+            },
+            "header": {
+             "fill": {
+              "color": "#C8D4E3"
+             },
+             "line": {
+              "color": "white"
+             }
+            },
+            "type": "table"
+           }
+          ]
+         },
+         "layout": {
+          "annotationdefaults": {
+           "arrowcolor": "#2a3f5f",
+           "arrowhead": 0,
+           "arrowwidth": 1
+          },
+          "coloraxis": {
+           "colorbar": {
+            "outlinewidth": 0,
+            "ticks": ""
+           }
+          },
+          "colorscale": {
+           "diverging": [
+            [
+             0,
+             "#8e0152"
+            ],
+            [
+             0.1,
+             "#c51b7d"
+            ],
+            [
+             0.2,
+             "#de77ae"
+            ],
+            [
+             0.3,
+             "#f1b6da"
+            ],
+            [
+             0.4,
+             "#fde0ef"
+            ],
+            [
+             0.5,
+             "#f7f7f7"
+            ],
+            [
+             0.6,
+             "#e6f5d0"
+            ],
+            [
+             0.7,
+             "#b8e186"
+            ],
+            [
+             0.8,
+             "#7fbc41"
+            ],
+            [
+             0.9,
+             "#4d9221"
+            ],
+            [
+             1,
+             "#276419"
+            ]
+           ],
+           "sequential": [
+            [
+             0,
+             "#0d0887"
+            ],
+            [
+             0.1111111111111111,
+             "#46039f"
+            ],
+            [
+             0.2222222222222222,
+             "#7201a8"
+            ],
+            [
+             0.3333333333333333,
+             "#9c179e"
+            ],
+            [
+             0.4444444444444444,
+             "#bd3786"
+            ],
+            [
+             0.5555555555555556,
+             "#d8576b"
+            ],
+            [
+             0.6666666666666666,
+             "#ed7953"
+            ],
+            [
+             0.7777777777777778,
+             "#fb9f3a"
+            ],
+            [
+             0.8888888888888888,
+             "#fdca26"
+            ],
+            [
+             1,
+             "#f0f921"
+            ]
+           ],
+           "sequentialminus": [
+            [
+             0,
+             "#0d0887"
+            ],
+            [
+             0.1111111111111111,
+             "#46039f"
+            ],
+            [
+             0.2222222222222222,
+             "#7201a8"
+            ],
+            [
+             0.3333333333333333,
+             "#9c179e"
+            ],
+            [
+             0.4444444444444444,
+             "#bd3786"
+            ],
+            [
+             0.5555555555555556,
+             "#d8576b"
+            ],
+            [
+             0.6666666666666666,
+             "#ed7953"
+            ],
+            [
+             0.7777777777777778,
+             "#fb9f3a"
+            ],
+            [
+             0.8888888888888888,
+             "#fdca26"
+            ],
+            [
+             1,
+             "#f0f921"
+            ]
+           ]
+          },
+          "colorway": [
+           "#636efa",
+           "#EF553B",
+           "#00cc96",
+           "#ab63fa",
+           "#FFA15A",
+           "#19d3f3",
+           "#FF6692",
+           "#B6E880",
+           "#FF97FF",
+           "#FECB52"
+          ],
+          "font": {
+           "color": "#2a3f5f"
+          },
+          "geo": {
+           "bgcolor": "white",
+           "lakecolor": "white",
+           "landcolor": "#E5ECF6",
+           "showlakes": true,
+           "showland": true,
+           "subunitcolor": "white"
+          },
+          "hoverlabel": {
+           "align": "left"
+          },
+          "hovermode": "closest",
+          "mapbox": {
+           "style": "light"
+          },
+          "paper_bgcolor": "white",
+          "plot_bgcolor": "#E5ECF6",
+          "polar": {
+           "angularaxis": {
+            "gridcolor": "white",
+            "linecolor": "white",
+            "ticks": ""
+           },
+           "bgcolor": "#E5ECF6",
+           "radialaxis": {
+            "gridcolor": "white",
+            "linecolor": "white",
+            "ticks": ""
+           }
+          },
+          "scene": {
+           "xaxis": {
+            "backgroundcolor": "#E5ECF6",
+            "gridcolor": "white",
+            "gridwidth": 2,
+            "linecolor": "white",
+            "showbackground": true,
+            "ticks": "",
+            "zerolinecolor": "white"
+           },
+           "yaxis": {
+            "backgroundcolor": "#E5ECF6",
+            "gridcolor": "white",
+            "gridwidth": 2,
+            "linecolor": "white",
+            "showbackground": true,
+            "ticks": "",
+            "zerolinecolor": "white"
+           },
+           "zaxis": {
+            "backgroundcolor": "#E5ECF6",
+            "gridcolor": "white",
+            "gridwidth": 2,
+            "linecolor": "white",
+            "showbackground": true,
+            "ticks": "",
+            "zerolinecolor": "white"
+           }
+          },
+          "shapedefaults": {
+           "line": {
+            "color": "#2a3f5f"
+           }
+          },
+          "ternary": {
+           "aaxis": {
+            "gridcolor": "white",
+            "linecolor": "white",
+            "ticks": ""
+           },
+           "baxis": {
+            "gridcolor": "white",
+            "linecolor": "white",
+            "ticks": ""
+           },
+           "bgcolor": "#E5ECF6",
+           "caxis": {
+            "gridcolor": "white",
+            "linecolor": "white",
+            "ticks": ""
+           }
+          },
+          "title": {
+           "x": 0.05
+          },
+          "xaxis": {
+           "automargin": true,
+           "gridcolor": "white",
+           "linecolor": "white",
+           "ticks": "",
+           "title": {
+            "standoff": 15
+           },
+           "zerolinecolor": "white",
+           "zerolinewidth": 2
+          },
+          "yaxis": {
+           "automargin": true,
+           "gridcolor": "white",
+           "linecolor": "white",
+           "ticks": "",
+           "title": {
+            "standoff": 15
+           },
+           "zerolinecolor": "white",
+           "zerolinewidth": 2
+          }
+         }
+        },
+        "title": {
+         "text": "Comparison of Returns between the Piotroski Algorithm and the S&P 500 Index"
+        },
+        "xaxis": {
+         "anchor": "y",
+         "domain": [
+          0,
+          1
+         ],
+         "title": {
+          "text": "Year"
+         }
+        },
+        "yaxis": {
+         "anchor": "x",
+         "domain": [
+          0,
+          1
+         ],
+         "title": {
+          "text": "Return obtained in Percentage points (%)"
+         }
+        }
+       }
+      },
+      "text/html": [
+       "<div>                            <div id=\"9de9a73a-b399-44f6-bd60-9cb627bda1b0\" class=\"plotly-graph-div\" style=\"height:525px; width:100%;\"></div>            <script type=\"text/javascript\">                require([\"plotly\"], function(Plotly) {                    window.PLOTLYENV=window.PLOTLYENV || {};                                    if (document.getElementById(\"9de9a73a-b399-44f6-bd60-9cb627bda1b0\")) {                    Plotly.newPlot(                        \"9de9a73a-b399-44f6-bd60-9cb627bda1b0\",                        [{\"hovertemplate\": \"Trading Algorithm / Index=Piotroski Return<br>Year=%{x}<br>Return obtained in Percentage points (%)=%{y}<extra></extra>\", \"legendgroup\": \"Piotroski Return\", \"line\": {\"color\": \"#636efa\", \"dash\": \"solid\"}, \"mode\": \"markers+lines\", \"name\": \"Piotroski Return\", \"orientation\": \"v\", \"showlegend\": true, \"type\": \"scatter\", \"x\": [\"2006-01-01T00:00:00\", \"2007-01-01T00:00:00\", \"2008-01-01T00:00:00\", \"2009-01-01T00:00:00\", \"2010-01-01T00:00:00\", \"2011-01-01T00:00:00\", \"2012-01-01T00:00:00\", \"2013-01-01T00:00:00\", \"2014-01-01T00:00:00\", \"2015-01-01T00:00:00\", \"2016-01-01T00:00:00\", \"2017-01-01T00:00:00\", \"2018-01-01T00:00:00\", \"2019-01-01T00:00:00\", \"2020-01-01T00:00:00\"], \"xaxis\": \"x\", \"y\": [22.01, 24.45, -13.44, -43.72, 79.64, 41.26, -26.39, 25.0, 39.26, 7.79, -41.26, 83.44, 56.14, -16.75, -14.86], \"yaxis\": \"y\"}, {\"hovertemplate\": \"Trading Algorithm / Index=S&P 500 Return<br>Year=%{x}<br>Return obtained in Percentage points (%)=%{y}<extra></extra>\", \"legendgroup\": \"S&P 500 Return\", \"line\": {\"color\": \"#EF553B\", \"dash\": \"solid\"}, \"mode\": \"markers+lines\", \"name\": \"S&P 500 Return\", \"orientation\": \"v\", \"showlegend\": true, \"type\": \"scatter\", \"x\": [\"2006-01-01T00:00:00\", \"2007-01-01T00:00:00\", \"2008-01-01T00:00:00\", \"2009-01-01T00:00:00\", \"2010-01-01T00:00:00\", \"2011-01-01T00:00:00\", \"2012-01-01T00:00:00\", \"2013-01-01T00:00:00\", \"2014-01-01T00:00:00\", \"2015-01-01T00:00:00\", \"2016-01-01T00:00:00\", \"2017-01-01T00:00:00\", \"2018-01-01T00:00:00\", \"2019-01-01T00:00:00\", \"2020-01-01T00:00:00\"], \"xaxis\": \"x\", \"y\": [15.79, 5.49, -37.0, 26.46, 15.06, 2.11, 16.0, 32.39, 13.69, 1.38, 11.96, 21.83, -4.38, 31.49, 18.4], \"yaxis\": \"y\"}],                        {\"legend\": {\"title\": {\"text\": \"Trading Algorithm / Index\"}, \"tracegroupgap\": 0}, \"template\": {\"data\": {\"bar\": [{\"error_x\": {\"color\": \"#2a3f5f\"}, \"error_y\": {\"color\": \"#2a3f5f\"}, \"marker\": {\"line\": {\"color\": \"#E5ECF6\", \"width\": 0.5}}, \"type\": \"bar\"}], \"barpolar\": [{\"marker\": {\"line\": {\"color\": \"#E5ECF6\", \"width\": 0.5}}, \"type\": \"barpolar\"}], \"carpet\": [{\"aaxis\": {\"endlinecolor\": \"#2a3f5f\", \"gridcolor\": \"white\", \"linecolor\": \"white\", \"minorgridcolor\": \"white\", \"startlinecolor\": \"#2a3f5f\"}, \"baxis\": {\"endlinecolor\": \"#2a3f5f\", \"gridcolor\": \"white\", \"linecolor\": \"white\", \"minorgridcolor\": \"white\", \"startlinecolor\": \"#2a3f5f\"}, \"type\": \"carpet\"}], \"choropleth\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"type\": \"choropleth\"}], \"contour\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"contour\"}], \"contourcarpet\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"type\": \"contourcarpet\"}], \"heatmap\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"heatmap\"}], \"heatmapgl\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"heatmapgl\"}], \"histogram\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"histogram\"}], \"histogram2d\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"histogram2d\"}], \"histogram2dcontour\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"histogram2dcontour\"}], \"mesh3d\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"type\": \"mesh3d\"}], \"parcoords\": [{\"line\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"parcoords\"}], \"pie\": [{\"automargin\": true, \"type\": \"pie\"}], \"scatter\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scatter\"}], \"scatter3d\": [{\"line\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scatter3d\"}], \"scattercarpet\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scattercarpet\"}], \"scattergeo\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scattergeo\"}], \"scattergl\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scattergl\"}], \"scattermapbox\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scattermapbox\"}], \"scatterpolar\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scatterpolar\"}], \"scatterpolargl\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scatterpolargl\"}], \"scatterternary\": [{\"marker\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"type\": \"scatterternary\"}], \"surface\": [{\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}, \"colorscale\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"type\": \"surface\"}], \"table\": [{\"cells\": {\"fill\": {\"color\": \"#EBF0F8\"}, \"line\": {\"color\": \"white\"}}, \"header\": {\"fill\": {\"color\": \"#C8D4E3\"}, \"line\": {\"color\": \"white\"}}, \"type\": \"table\"}]}, \"layout\": {\"annotationdefaults\": {\"arrowcolor\": \"#2a3f5f\", \"arrowhead\": 0, \"arrowwidth\": 1}, \"coloraxis\": {\"colorbar\": {\"outlinewidth\": 0, \"ticks\": \"\"}}, \"colorscale\": {\"diverging\": [[0, \"#8e0152\"], [0.1, \"#c51b7d\"], [0.2, \"#de77ae\"], [0.3, \"#f1b6da\"], [0.4, \"#fde0ef\"], [0.5, \"#f7f7f7\"], [0.6, \"#e6f5d0\"], [0.7, \"#b8e186\"], [0.8, \"#7fbc41\"], [0.9, \"#4d9221\"], [1, \"#276419\"]], \"sequential\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]], \"sequentialminus\": [[0.0, \"#0d0887\"], [0.1111111111111111, \"#46039f\"], [0.2222222222222222, \"#7201a8\"], [0.3333333333333333, \"#9c179e\"], [0.4444444444444444, \"#bd3786\"], [0.5555555555555556, \"#d8576b\"], [0.6666666666666666, \"#ed7953\"], [0.7777777777777778, \"#fb9f3a\"], [0.8888888888888888, \"#fdca26\"], [1.0, \"#f0f921\"]]}, \"colorway\": [\"#636efa\", \"#EF553B\", \"#00cc96\", \"#ab63fa\", \"#FFA15A\", \"#19d3f3\", \"#FF6692\", \"#B6E880\", \"#FF97FF\", \"#FECB52\"], \"font\": {\"color\": \"#2a3f5f\"}, \"geo\": {\"bgcolor\": \"white\", \"lakecolor\": \"white\", \"landcolor\": \"#E5ECF6\", \"showlakes\": true, \"showland\": true, \"subunitcolor\": \"white\"}, \"hoverlabel\": {\"align\": \"left\"}, \"hovermode\": \"closest\", \"mapbox\": {\"style\": \"light\"}, \"paper_bgcolor\": \"white\", \"plot_bgcolor\": \"#E5ECF6\", \"polar\": {\"angularaxis\": {\"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\"}, \"bgcolor\": \"#E5ECF6\", \"radialaxis\": {\"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\"}}, \"scene\": {\"xaxis\": {\"backgroundcolor\": \"#E5ECF6\", \"gridcolor\": \"white\", \"gridwidth\": 2, \"linecolor\": \"white\", \"showbackground\": true, \"ticks\": \"\", \"zerolinecolor\": \"white\"}, \"yaxis\": {\"backgroundcolor\": \"#E5ECF6\", \"gridcolor\": \"white\", \"gridwidth\": 2, \"linecolor\": \"white\", \"showbackground\": true, \"ticks\": \"\", \"zerolinecolor\": \"white\"}, \"zaxis\": {\"backgroundcolor\": \"#E5ECF6\", \"gridcolor\": \"white\", \"gridwidth\": 2, \"linecolor\": \"white\", \"showbackground\": true, \"ticks\": \"\", \"zerolinecolor\": \"white\"}}, \"shapedefaults\": {\"line\": {\"color\": \"#2a3f5f\"}}, \"ternary\": {\"aaxis\": {\"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\"}, \"baxis\": {\"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\"}, \"bgcolor\": \"#E5ECF6\", \"caxis\": {\"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\"}}, \"title\": {\"x\": 0.05}, \"xaxis\": {\"automargin\": true, \"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\", \"title\": {\"standoff\": 15}, \"zerolinecolor\": \"white\", \"zerolinewidth\": 2}, \"yaxis\": {\"automargin\": true, \"gridcolor\": \"white\", \"linecolor\": \"white\", \"ticks\": \"\", \"title\": {\"standoff\": 15}, \"zerolinecolor\": \"white\", \"zerolinewidth\": 2}}}, \"title\": {\"text\": \"Comparison of Returns between the Piotroski Algorithm and the S&P 500 Index\"}, \"xaxis\": {\"anchor\": \"y\", \"domain\": [0.0, 1.0], \"title\": {\"text\": \"Year\"}}, \"yaxis\": {\"anchor\": \"x\", \"domain\": [0.0, 1.0], \"title\": {\"text\": \"Return obtained in Percentage points (%)\"}}},                        {\"responsive\": true}                    ).then(function(){\n",
+       "                            \n",
+       "var gd = document.getElementById('9de9a73a-b399-44f6-bd60-9cb627bda1b0');\n",
+       "var x = new MutationObserver(function (mutations, observer) {{\n",
+       "        var display = window.getComputedStyle(gd).display;\n",
+       "        if (!display || display === 'none') {{\n",
+       "            console.log([gd, 'removed!']);\n",
+       "            Plotly.purge(gd);\n",
+       "            observer.disconnect();\n",
+       "        }}\n",
+       "}});\n",
+       "\n",
+       "// Listen for the removal of the full notebook cells\n",
+       "var notebookContainer = gd.closest('#notebook-container');\n",
+       "if (notebookContainer) {{\n",
+       "    x.observe(notebookContainer, {childList: true});\n",
+       "}}\n",
+       "\n",
+       "// Listen for the clearing of the current output cell\n",
+       "var outputEl = gd.closest('.output');\n",
+       "if (outputEl) {{\n",
+       "    x.observe(outputEl, {childList: true});\n",
+       "}}\n",
+       "\n",
+       "                        })                };                });            </script>        </div>"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "fig = px.line(returns_melted, x=\"Year\", y=\"Return %\", color='Algorithm / Index',\n",
+    "              labels={\n",
+    "                     \"Year\": \"Year\",\n",
+    "                     \"Return %\": \"Return obtained in Percentage points (%)\",\n",
+    "                     \"Algorithm / Index\": \"Trading Algorithm / Index\"\n",
+    "                 },\n",
+    "                title=\"Comparison of Returns between the Piotroski Algorithm and the S&P 500 Index\")\n",
+    "fig.update_traces(mode='markers+lines')\n",
+    "fig.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "a28d3ef3",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.8"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
